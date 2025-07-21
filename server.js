@@ -26,6 +26,9 @@ const io = socketIo(server, {
   }
 });
 
+// Set io instance on app for access in routes
+app.set('io', io);
+
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
@@ -51,11 +54,15 @@ mongoose.connect(MONGODB_URI, {
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const rideRoutes = require('./routes/rides');
+const paymentRoutes = require('./routes/payment');
+const walletRoutes = require('./routes/wallet');
 
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/rides', rideRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/wallets', walletRoutes);
 
 // Socket.io connection and event handlers
 io.on('connection', (socket) => {

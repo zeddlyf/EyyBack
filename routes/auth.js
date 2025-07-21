@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Wallet = require('../models/Wallet');
 const auth = require('../middleware/auth');
 
 // Register new user
@@ -36,6 +37,17 @@ router.post('/register', async (req, res) => {
     });
 
     await user.save();
+
+    // If the user is a commuter, create a wallet with a balance of 500
+    if (role === 'commuter') {
+      const wallet = new Wallet({
+        user: user._id,
+        type: 'commuter',
+        amount: 500,
+        currency: 'PHP'
+      });
+      await wallet.save();
+    }
 
     // Generate token
     const token = jwt.sign(

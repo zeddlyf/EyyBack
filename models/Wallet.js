@@ -1,4 +1,4 @@
-/** this is the Wallet for payment */
+/** this is the Wallet   for payment */
 
 const mongoose = require('mongoose');
 

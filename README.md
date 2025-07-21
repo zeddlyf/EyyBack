@@ -1,6 +1,6 @@
 # Eyytrike Backend
 
-This is the backend server for the Eyytrike ride-sharing application. It provides RESTful APIs and real-time communication using Socket.IO for managing users, rides, and driver-passenger interactions.
+This is the backend server for the Eyytrike ride-sharing application. It provides RESTful APIs and real-time communication using Socket.IO for managing users, rides, payments, wallets, and driver-passenger interactions.
 
 ## Features
 
@@ -8,6 +8,7 @@ This is the backend server for the Eyytrike ride-sharing application. It provide
 - Real-time location tracking
 - Ride request and management
 - Driver-passenger matching
+- Wallet and payment management
 - Rating system
 - Real-time notifications
 
@@ -57,6 +58,20 @@ This is the backend server for the Eyytrike ride-sharing application. It provide
 - PATCH `/api/rides/:id/status` - Update ride status
 - POST `/api/rides/:id/rate` - Rate completed ride
 
+### Wallets
+- POST `/api/wallets` - Create a new wallet
+- GET `/api/wallets` - Get all wallets for authenticated user
+- GET `/api/wallets/:id` - Get a wallet by ID (owned by user)
+- PUT `/api/wallets/:id` - Update a wallet by ID (owned by user)
+- DELETE `/api/wallets/:id` - Delete a wallet by ID (owned by user)
+
+### Payments
+- POST `/api/payments` - Create a new payment
+- GET `/api/payments` - Get all payments for authenticated user
+- GET `/api/payments/:id` - Get a payment by ID (owned by user)
+- PUT `/api/payments/:id` - Update a payment by ID (owned by user)
+- DELETE `/api/payments/:id` - Delete a payment by ID (owned by user)
+
 ## Socket.IO Events
 
 ### Client to Server
@@ -86,4 +101,4 @@ The API uses standard HTTP status codes and returns error messages in the follow
 - Password hashing using bcrypt
 - Input validation
 - CORS enabled
-- Environment variables for sensitive data 
+- Environment variables for sensitive data

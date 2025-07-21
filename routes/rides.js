@@ -16,7 +16,10 @@ router.post('/', auth, async (req, res) => {
     // Notify available drivers
     req.app.get('io').emit('newRideRequest', ride);
     
-    res.status(201).json(ride);
+    // Return ride with 'id' property for frontend compatibility
+    const rideObj = ride.toObject();
+    rideObj.id = rideObj._id;
+    res.status(201).json(rideObj);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
