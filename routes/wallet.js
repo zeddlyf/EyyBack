@@ -64,4 +64,65 @@ router.delete('/:id', auth, async (req, res) => {
     }
 });
 
+// Add funds to wallet
+router.post('/add-funds', auth, async (req, res) => {
+    try {
+        const { amount } = req.body;
+        
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ error: 'Valid amount is required' });
+        }
+
+        // Find user's wallet
+        let wallet = await Wallet.findOne({ user: req.user._id });
+        
+        if (!wallet) {
+            // Create new wallet if doesn't exist
+            wallet = new Wallet({
+                user: req.user._id,
+                type: 'commuter',
+                amount: amount,
+                currency: 'PHP'
+            });
+        } else {
+            // Add to existing wallet
+            wallet.amount += amount;
+        }
+        
+        await wallet.save();
+        res.json(wallet);
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// Withdraw funds from wallet
+router.post('/withdraw', auth, async (req, res) => {
+    try {
+        const { amount } = req.body;
+        
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ error: 'Valid amount is required' });
+        }
+
+        // Find user's wallet
+        const wallet = await Wallet.findOne({ user: req.user._id });
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+
+        if (wallet.amount < amount) {
+            return res.status(400).json({ error: 'Insufficient funds' });
+        }
+
+        wallet.amount -= amount;
+        await wallet.save();
+        
+        res.json(wallet);
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
 module.exports = router;

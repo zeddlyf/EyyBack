@@ -25,3 +25,20 @@ const auth = async (req, res, next) => {
 };
 
 module.exports = auth; 
+
+// Role-based authorization middleware
+module.exports.requireRole = (...roles) => {
+  return (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: 'Please authenticate.' });
+      }
+      if (!roles.includes(req.user.role)) {
+        return res.status(403).json({ error: 'Forbidden: insufficient privileges' });
+      }
+      next();
+    } catch (error) {
+      res.status(403).json({ error: 'Forbidden' });
+    }
+  };
+};

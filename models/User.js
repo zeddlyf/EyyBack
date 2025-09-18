@@ -2,11 +2,22 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
-  fullName: {
+  firstName: {
     type: String,
-    required: [true, 'Full name is required'],
+    required: [true, 'First name is required'],
     trim: true,
-    minlength: [2, 'Full name must be at least 2 characters long']
+    minlength: [2, 'First name must be at least 2 characters long']
+  },
+  lastName: {
+    type: String,
+    required: [true, 'Last name is required'],
+    trim: true,
+    minlength: [2, 'Last name must be at least 2 characters long']
+  },
+  middleName: {
+    type: String,
+    trim: true,
+    default: ''
   },
   email: {
     type: String,
@@ -29,8 +40,15 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['driver', 'commuter'],
+    enum: ['driver', 'commuter', 'admin'],
     required: [true, 'Role is required']
+  },
+  approvalStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: function() {
+      return this.role === 'driver' ? 'pending' : 'approved';
+    }
   },
   licenseNumber: {
     type: String,
@@ -38,6 +56,35 @@ const userSchema = new mongoose.Schema({
       return this.role === 'driver';
     },
     trim: true
+  },
+  address: {
+    street: {
+      type: String,
+      trim: true
+    },
+    city: {
+      type: String,
+      required: [true, 'City is required'],
+      trim: true
+    },
+    province: {
+      type: String,
+      required: [true, 'Province is required'],
+      trim: true
+    },
+    postalCode: {
+      type: String,
+      trim: true
+    },
+    country: {
+      type: String,
+      default: 'Philippines',
+      trim: true
+    },
+    fullAddress: {
+      type: String,
+      trim: true
+    }
   },
   location: {
     type: {
@@ -64,6 +111,14 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0,
     min: 0
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  profilePicture: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true
@@ -72,6 +127,35 @@ const userSchema = new mongoose.Schema({
 // Create index for location queries
 userSchema.index({ location: '2dsphere' });
 userSchema.index({ email: 1 }, { unique: true });
+
+// Virtual field for full name
+userSchema.virtual('fullName').get(function() {
+  const parts = [this.firstName];
+  if (this.middleName) {
+    parts.push(this.middleName);
+  }
+  parts.push(this.lastName);
+  return parts.join(' ');
+});
+
+// Ensure virtual fields are serialized
+userSchema.set('toJSON', { virtuals: true });
+userSchema.set('toObject', { virtuals: true });
+
+// Generate full address before saving
+userSchema.pre('save', function(next) {
+  if (this.address && (this.isModified('address') || this.isNew)) {
+    const addressParts = [];
+    if (this.address.street) addressParts.push(this.address.street);
+    if (this.address.city) addressParts.push(this.address.city);
+    if (this.address.province) addressParts.push(this.address.province);
+    if (this.address.postalCode) addressParts.push(this.address.postalCode);
+    if (this.address.country) addressParts.push(this.address.country);
+    
+    this.address.fullAddress = addressParts.join(', ');
+  }
+  next();
+});
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {

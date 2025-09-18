@@ -15,10 +15,10 @@ router.post('/register', async (req, res) => {
     }
 
     // Validate required fields
-    const { fullName, email, password, phoneNumber, role, licenseNumber } = req.body;
+    const { firstName, lastName, middleName, email, password, phoneNumber, role, licenseNumber, address } = req.body;
     
-    if (!fullName || !email || !password || !phoneNumber || !role) {
-      return res.status(400).json({ error: 'All required fields must be provided' });
+    if (!firstName || !lastName || !email || !password || !phoneNumber || !role) {
+      return res.status(400).json({ error: 'firstName, lastName, email, password, phoneNumber, and role are required' });
     }
 
     // Validate role-specific requirements
@@ -26,17 +26,37 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'License number is required for drivers' });
     }
 
+    // Validate address requirements
+    if (!address || !address.city || !address.province) {
+      return res.status(400).json({ error: 'City and province are required in address' });
+    }
+
     // Create new user
     const user = new User({
-      fullName,
+      firstName,
+      lastName,
+      middleName: middleName || '',
       email,
       password,
       phoneNumber,
       role,
-      licenseNumber: role === 'driver' ? licenseNumber : undefined
+      licenseNumber: role === 'driver' ? licenseNumber : undefined,
+      address: {
+        street: address.street || '',
+        city: address.city,
+        province: address.province,
+        postalCode: address.postalCode || '',
+        country: address.country || 'Philippines'
+      }
     });
 
     await user.save();
+
+    // If the user is a driver, ensure approvalStatus is pending by default
+    if (role === 'driver' && user.approvalStatus !== 'pending') {
+      user.approvalStatus = 'pending';
+      await user.save();
+    }
 
     // If the user is a commuter, create a wallet with a balance of 500
     if (role === 'commuter') {

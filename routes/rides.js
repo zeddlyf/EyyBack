@@ -44,6 +44,55 @@ router.get('/my-rides', auth, async (req, res) => {
   }
 });
 
+// Get all rides (for frontend compatibility)
+router.get('/', auth, async (req, res) => {
+  try {
+    const { status } = req.query;
+    const query = {
+      $or: [
+        { passenger: req.user._id },
+        { driver: req.user._id }
+      ]
+    };
+    
+    if (status) {
+      query.status = status;
+    }
+    
+    const rides = await Ride.find(query)
+      .populate('passenger', 'firstName lastName phoneNumber')
+      .populate('driver', 'firstName lastName phoneNumber')
+      .sort({ createdAt: -1 });
+    
+    res.json(rides);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get ride by ID
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id)
+      .populate('passenger', 'firstName lastName phoneNumber')
+      .populate('driver', 'firstName lastName phoneNumber');
+    
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+    
+    // Check if user is authorized to view this ride
+    if (req.user._id.toString() !== ride.passenger.toString() && 
+        req.user._id.toString() !== ride.driver.toString()) {
+      return res.status(403).json({ error: 'Not authorized to view this ride' });
+    }
+    
+    res.json(ride);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // Get nearby ride requests (for drivers)
 router.get('/nearby', auth, async (req, res) => {
   try {
@@ -122,6 +171,38 @@ router.patch('/:id/status', auth, async (req, res) => {
     // Notify all parties involved
     req.app.get('io').to(`ride_${ride._id}`).emit('rideStatusChanged', ride);
     
+    res.json(ride);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Complete ride
+router.post('/:id/complete', auth, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    if (req.user._id.toString() !== ride.driver.toString()) {
+      return res.status(403).json({ error: 'Only drivers can complete rides' });
+    }
+
+    if (ride.status !== 'accepted') {
+      return res.status(400).json({ error: 'Can only complete accepted rides' });
+    }
+
+    ride.status = 'completed';
+    if (req.body.rating) {
+      ride.rating = req.body.rating;
+    }
+    await ride.save();
+
+    // Notify passenger
+    req.app.get('io').to(`user_${ride.passenger}`).emit('rideCompleted', ride);
+
     res.json(ride);
   } catch (error) {
     res.status(400).json({ error: error.message });
