@@ -58,6 +58,24 @@ const paymentRoutes = require('./routes/payment');
 const walletRoutes = require('./routes/wallet');
 const messagingRoutes = require('./routes/messaging');
 
+// Health check endpoint for Railway
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    message: 'EyyBack API is running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'EyyBack API Server',
+    version: '1.0.0',
+    status: 'running'
+  });
+});
+
 // Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -141,6 +159,8 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Public URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
 }); 
