@@ -56,6 +56,7 @@ const userRoutes = require('./routes/users');
 const rideRoutes = require('./routes/rides');
 const paymentRoutes = require('./routes/payment');
 const walletRoutes = require('./routes/wallet');
+const messagingRoutes = require('./routes/messaging');
 
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -63,6 +64,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/wallets', walletRoutes);
+app.use('/api/messaging', messagingRoutes);
 
 // Socket.io connection and event handlers
 io.on('connection', (socket) => {
@@ -76,6 +78,32 @@ io.on('connection', (socket) => {
   socket.on('joinRideRoom', (rideId) => {
     socket.join(`ride_${rideId}`);
     console.log(`User joined ride room: ${rideId}`);
+  });
+
+  socket.on('joinConversationRoom', (conversationId) => {
+    socket.join(`conversation_${conversationId}`);
+    console.log(`User joined conversation room: ${conversationId}`);
+  });
+
+  socket.on('leaveConversationRoom', (conversationId) => {
+    socket.leave(`conversation_${conversationId}`);
+    console.log(`User left conversation room: ${conversationId}`);
+  });
+
+  socket.on('typingStart', (data) => {
+    const { conversationId, userId } = data;
+    socket.to(`conversation_${conversationId}`).emit('userTyping', {
+      userId,
+      isTyping: true
+    });
+  });
+
+  socket.on('typingStop', (data) => {
+    const { conversationId, userId } = data;
+    socket.to(`conversation_${conversationId}`).emit('userTyping', {
+      userId,
+      isTyping: false
+    });
   });
 
   socket.on('driverLocationUpdate', async (data) => {

@@ -43,6 +43,24 @@ const userSchema = new mongoose.Schema({
     enum: ['driver', 'commuter', 'admin'],
     required: [true, 'Role is required']
   },
+  admin_id: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
+  commuter_id: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
+  driver_id: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
   approvalStatus: {
     type: String,
     enum: ['pending', 'approved', 'rejected'],
