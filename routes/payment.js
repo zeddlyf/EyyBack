@@ -11,6 +11,16 @@ router.post('/', auth, async (req, res) => {
             user: req.user._id
         });
         await payment.save();
+        const Notification = require('../models/Notification');
+        const io = req.app.get('io');
+        const note = await Notification.create({
+          user: req.user._id,
+          type: 'payment',
+          title: 'Payment processed',
+          body: `₱${payment.amount} ${payment.type || 'transaction'}`,
+          data: { paymentId: payment._id }
+        });
+        io.to(`user_${req.user._id}`).emit('notification', note);
         res.status(201).json(payment);
     } catch (err) {
         res.status(400).json({ error: err.message });

@@ -104,6 +104,21 @@ Login with email and password.
 ### GET /api/auth/me
 Get current user profile (requires authentication).
 
+### POST /api/auth/renew
+Renew an access token for a signed-in user (sliding session).
+
+**Response:**
+```json
+{
+  "user": { "_id": "...", "email": "..." },
+  "token": "new-jwt-token"
+}
+```
+
+Notes:
+- Requires a valid (non-expired) token.
+- Frontend proactively renews when the token is near expiry.
+
 ## User Management Endpoints
 
 ### GET /api/users/profile
@@ -201,6 +216,7 @@ Common status codes:
 - `201`: Created
 - `400`: Bad Request
 - `401`: Unauthorized
+  - Includes `{"error": "Token expired"}` when the JWT is expired
 - `403`: Forbidden
 - `404`: Not Found
 - `500`: Internal Server Error

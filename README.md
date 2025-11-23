@@ -102,3 +102,11 @@ The API uses standard HTTP status codes and returns error messages in the follow
 - Input validation
 - CORS enabled
 - Environment variables for sensitive data
+
+### Google API Key
+
+- Store your Google API key in the project root `.env` file as `GOOGLE_API_KEY=...`.
+- The backend loads environment variables via `dotenv` to avoid exposing secrets.
+- Client code does not log the key; avoid printing URLs containing `key`.
+- Restrict the key in Google Cloud Console: limit usage to required APIs and allowed origins/IPs.
+- Monitor usage in Google Cloud (APIs & Services → Metrics, Quotas, and Audit Logs). Configure alerts on unusual traffic.

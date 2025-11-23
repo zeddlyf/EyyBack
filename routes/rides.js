@@ -70,29 +70,6 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// Get ride by ID
-router.get('/:id', auth, async (req, res) => {
-  try {
-    const ride = await Ride.findById(req.params.id)
-      .populate('passenger', 'firstName lastName phoneNumber')
-      .populate('driver', 'firstName lastName phoneNumber');
-    
-    if (!ride) {
-      return res.status(404).json({ error: 'Ride not found' });
-    }
-    
-    // Check if user is authorized to view this ride
-    if (req.user._id.toString() !== ride.passenger.toString() && 
-        req.user._id.toString() !== ride.driver.toString()) {
-      return res.status(403).json({ error: 'Not authorized to view this ride' });
-    }
-    
-    res.json(ride);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
 // Get nearby ride requests (for drivers)
 router.get('/nearby', auth, async (req, res) => {
   try {
@@ -113,7 +90,7 @@ router.get('/nearby', auth, async (req, res) => {
           $maxDistance: parseInt(maxDistance)
         }
       }
-    }).populate('passenger', 'name phone');
+    }).populate('passenger', 'firstName lastName phoneNumber');
     
     res.json(rides);
   } catch (error) {
@@ -121,8 +98,32 @@ router.get('/nearby', auth, async (req, res) => {
   }
 });
 
+// Get ride by ID (restrict to ObjectId format)
+router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id)
+      .populate('passenger', 'firstName lastName phoneNumber')
+      .populate('driver', 'firstName lastName phoneNumber');
+    
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+    
+    // Check if user is authorized to view this ride
+    const isDriver = ride.driver && req.user._id.toString() === ride.driver.toString();
+    const isPassenger = ride.passenger && req.user._id.toString() === ride.passenger.toString();
+    if (!isDriver && !isPassenger) {
+      return res.status(403).json({ error: 'Not authorized to view this ride' });
+    }
+    
+    res.json(ride);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // Accept ride request
-router.patch('/:id/accept', auth, async (req, res) => {
+  router.patch('/:id/accept', auth, async (req, res) => {
   try {
     if (req.user.role !== 'driver') {
       return res.status(403).json({ error: 'Only drivers can accept rides' });
@@ -142,8 +143,18 @@ router.patch('/:id/accept', auth, async (req, res) => {
     ride.status = 'accepted';
     await ride.save();
 
-    // Notify passenger
-    req.app.get('io').to(`user_${ride.passenger}`).emit('rideAccepted', ride);
+    const io = req.app.get('io');
+    // Ensure conversation exists and notify both parties
+    const Conversation = require('../models/Conversation');
+    const conversation = await Conversation.findOrCreateConversation(ride.passenger, ride.driver, ride._id);
+    // Notify passenger and driver
+    io.to(`user_${ride.passenger}`).emit('rideAccepted', { ride, conversationId: conversation._id });
+    io.to(`user_${ride.driver}`).emit('conversationCreated', { rideId: ride._id, conversationId: conversation._id });
+    const Notification = require('../models/Notification');
+    const passNote = await Notification.create({ user: ride.passenger, type: 'ride', title: 'Ride accepted', body: 'A driver accepted your ride', data: { rideId: ride._id } });
+    const drvNote = await Notification.create({ user: ride.driver, type: 'ride', title: 'Ride assigned', body: 'You accepted a ride', data: { rideId: ride._id } });
+    req.app.get('io').to(`user_${ride.passenger}`).emit('notification', passNote);
+    req.app.get('io').to(`user_${ride.driver}`).emit('notification', drvNote);
     
     res.json(ride);
   } catch (error) {
@@ -152,7 +163,7 @@ router.patch('/:id/accept', auth, async (req, res) => {
 });
 
 // Update ride status
-router.patch('/:id/status', auth, async (req, res) => {
+  router.patch('/:id/status', auth, async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id);
     
@@ -160,8 +171,9 @@ router.patch('/:id/status', auth, async (req, res) => {
       return res.status(404).json({ error: 'Ride not found' });
     }
 
-    if (req.user._id.toString() !== ride.driver.toString() && 
-        req.user._id.toString() !== ride.passenger.toString()) {
+    const isDriver = ride.driver && req.user._id.toString() === ride.driver.toString();
+    const isPassenger = ride.passenger && req.user._id.toString() === ride.passenger.toString();
+    if (!isDriver && !isPassenger) {
       return res.status(403).json({ error: 'Not authorized to update this ride' });
     }
 
@@ -170,6 +182,12 @@ router.patch('/:id/status', auth, async (req, res) => {
 
     // Notify all parties involved
     req.app.get('io').to(`ride_${ride._id}`).emit('rideStatusChanged', ride);
+    const Notification = require('../models/Notification');
+    const targets = [ride.passenger, ride.driver].filter(Boolean);
+    for (const u of targets) {
+      const note = await Notification.create({ user: u, type: 'ride', title: 'Ride status updated', body: `Status: ${ride.status}`, data: { rideId: ride._id } });
+      req.app.get('io').to(`user_${u}`).emit('notification', note);
+    }
     
     res.json(ride);
   } catch (error) {
@@ -178,7 +196,7 @@ router.patch('/:id/status', auth, async (req, res) => {
 });
 
 // Complete ride
-router.post('/:id/complete', auth, async (req, res) => {
+  router.post('/:id/complete', auth, async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id);
     
@@ -186,7 +204,7 @@ router.post('/:id/complete', auth, async (req, res) => {
       return res.status(404).json({ error: 'Ride not found' });
     }
 
-    if (req.user._id.toString() !== ride.driver.toString()) {
+    if (!ride.driver || req.user._id.toString() !== ride.driver.toString()) {
       return res.status(403).json({ error: 'Only drivers can complete rides' });
     }
 
@@ -200,8 +218,25 @@ router.post('/:id/complete', auth, async (req, res) => {
     }
     await ride.save();
 
-    // Notify passenger
-    req.app.get('io').to(`user_${ride.passenger}`).emit('rideCompleted', ride);
+    // Set TTL for messages in this conversation (24h retention)
+    const Conversation = require('../models/Conversation');
+    const Message = require('../models/Message');
+    const conversation = await Conversation.findOne({ rideId: ride._id });
+    if (conversation) {
+      const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await Message.updateMany({ conversationId: conversation._id }, { expiresAt: expiry });
+      conversation.isActive = false;
+      await conversation.save();
+      // Notify passenger
+      req.app.get('io').to(`user_${ride.passenger}`).emit('rideCompleted', { ride, conversationId: conversation._id });
+    } else {
+      req.app.get('io').to(`user_${ride.passenger}`).emit('rideCompleted', { ride });
+    }
+    const Notification = require('../models/Notification');
+    const passNote = await Notification.create({ user: ride.passenger, type: 'ride', title: 'Ride completed', body: 'Your ride has been completed', data: { rideId: ride._id } });
+    const drvNote = await Notification.create({ user: ride.driver, type: 'ride', title: 'Ride completed', body: 'You completed a ride', data: { rideId: ride._id } });
+    req.app.get('io').to(`user_${ride.passenger}`).emit('notification', passNote);
+    req.app.get('io').to(`user_${ride.driver}`).emit('notification', drvNote);
 
     res.json(ride);
   } catch (error) {
@@ -222,17 +257,40 @@ router.post('/:id/rate', auth, async (req, res) => {
       return res.status(400).json({ error: 'Can only rate completed rides' });
     }
 
-    if (req.user._id.toString() !== ride.passenger.toString()) {
+    if (!ride.passenger || req.user._id.toString() !== ride.passenger.toString()) {
       return res.status(403).json({ error: 'Only passengers can rate rides' });
     }
 
-    ride.rating = req.body.rating;
-    ride.feedback = req.body.feedback;
+    const rawRating = Number(req.body.rating);
+    if (Number.isNaN(rawRating)) {
+      return res.status(400).json({ error: 'Rating is required' });
+    }
+    // Clamp to 1–5 and enforce 0.5 increments
+    let rating = Math.max(1, Math.min(5, rawRating));
+    rating = Math.round(rating * 2) / 2;
+
+    const feedbackText = (req.body.feedback || '').toString();
+    if (feedbackText.length < 20 || feedbackText.length > 500) {
+      return res.status(400).json({ error: 'Feedback must be 20-500 characters' });
+    }
+    // Basic sanitization: strip HTML tags and escape angle brackets
+    const sanitized = feedbackText.replace(/<[^>]*>?/gm, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    ride.rating = rating;
+    ride.feedback = sanitized;
+    ride.feedbackStatus = 'pending';
     await ride.save();
 
-    // Update driver's average rating
+    // Lightweight moderation: auto-approve if no banned words
+    const banned = ['spam', 'scam', 'hate'];
+    const containsBanned = banned.some(w => sanitized.toLowerCase().includes(w));
+    if (!containsBanned) {
+      ride.feedbackStatus = 'approved';
+    }
+
+    // Update driver's average rating (approved only)
     const driver = await User.findById(ride.driver);
-    const driverRides = await Ride.find({ driver: ride.driver, rating: { $exists: true } });
+    const driverRides = await Ride.find({ driver: ride.driver, rating: { $exists: true }, feedbackStatus: { $ne: 'rejected' } });
     const averageRating = driverRides.reduce((acc, ride) => acc + ride.rating, 0) / driverRides.length;
     
     driver.rating = averageRating;
@@ -244,4 +302,126 @@ router.post('/:id/rate', auth, async (req, res) => {
   }
 });
 
-module.exports = router; 
+// List feedback for a driver with sorting/filtering
+router.get('/feedback', auth, async (req, res) => {
+  try {
+    const { driverId, status = 'approved', sort = 'newest', page = 1, limit = 20 } = req.query;
+    const query = { rating: { $exists: true } };
+    if (driverId) query.driver = driverId;
+    if (!driverId && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only for listing all feedback' });
+    }
+    if (status) query.feedbackStatus = status;
+    const sortMap = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      highest: { rating: -1 },
+      lowest: { rating: 1 }
+    };
+    const docs = await Ride.find(query)
+      .select('rating feedback feedbackStatus createdAt passenger driver')
+      .populate('passenger', 'firstName lastName')
+      .populate('driver', 'firstName lastName')
+      .sort(sortMap[sort] || sortMap.newest)
+      .skip((parseInt(page) - 1) * parseInt(limit))
+      .limit(parseInt(limit));
+    const total = await Ride.countDocuments(query);
+    res.json({ items: docs, total });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Rating distribution for a driver
+router.get('/feedback/distribution', async (req, res) => {
+  try {
+    const { driverId } = req.query;
+    if (!driverId) {
+      return res.status(400).json({ error: 'driverId is required' });
+    }
+    const rides = await Ride.find({ driver: driverId, rating: { $exists: true }, feedbackStatus: { $ne: 'rejected' } }).select('rating');
+    const buckets = { 1: 0, 1.5: 0, 2: 0, 2.5: 0, 3: 0, 3.5: 0, 4: 0, 4.5: 0, 5: 0 };
+    let sum = 0;
+    for (const r of rides) {
+      const val = Math.round(r.rating * 2) / 2;
+      buckets[val] = (buckets[val] || 0) + 1;
+      sum += val;
+    }
+    const average = rides.length ? sum / rides.length : 0;
+    res.json({ distribution: buckets, average, count: rides.length });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Flag feedback on a ride
+router.post('/:id/feedback/flag', auth, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    if (!ride) return res.status(404).json({ error: 'Ride not found' });
+    if (req.user._id.toString() !== ride.passenger.toString() && req.user._id.toString() !== ride.driver.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Not authorized to flag this feedback' });
+    }
+    const reason = (req.body.reason || '').toString().trim().slice(0, 200);
+    ride.feedbackFlagged = true;
+    if (reason) ride.feedbackFlags.push(reason);
+    await ride.save();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Admin: list pending/flagged feedback
+router.get('/admin/feedback/pending', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    const items = await Ride.find({ rating: { $exists: true }, $or: [{ feedbackStatus: 'pending' }, { feedbackFlagged: true }] })
+      .select('rating feedback feedbackStatus feedbackFlagged feedbackFlags passenger driver createdAt')
+      .populate('passenger', 'firstName lastName')
+      .populate('driver', 'firstName lastName');
+    res.json({ items });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Admin: approve feedback
+router.post('/admin/feedback/:rideId/approve', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const ride = await Ride.findById(req.params.rideId);
+    if (!ride) return res.status(404).json({ error: 'Ride not found' });
+    ride.feedbackStatus = 'approved';
+    ride.feedbackFlagged = false;
+    await ride.save();
+    const driverRides = await Ride.find({ driver: ride.driver, rating: { $exists: true }, feedbackStatus: { $ne: 'rejected' } });
+    const averageRating = driverRides.reduce((acc, r) => acc + r.rating, 0) / driverRides.length;
+    await User.findByIdAndUpdate(ride.driver, { rating: averageRating });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Admin: reject feedback
+router.post('/admin/feedback/:rideId/reject', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const ride = await Ride.findById(req.params.rideId);
+    if (!ride) return res.status(404).json({ error: 'Ride not found' });
+    ride.feedbackStatus = 'rejected';
+    ride.feedbackFlagged = false;
+    await ride.save();
+    const driverRides = await Ride.find({ driver: ride.driver, rating: { $exists: true }, feedbackStatus: { $ne: 'rejected' } });
+    const averageRating = driverRides.length ? (driverRides.reduce((acc, r) => acc + r.rating, 0) / driverRides.length) : 0;
+    await User.findByIdAndUpdate(ride.driver, { rating: averageRating });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+module.exports = router;

@@ -75,6 +75,19 @@ const rideSchema = new mongoose.Schema({
   feedback: {
     type: String
   },
+  feedbackStatus: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending'
+  },
+  feedbackFlagged: {
+    type: Boolean,
+    default: false
+  },
+  feedbackFlags: {
+    type: [String],
+    default: []
+  },
   notes: {
     type: String
   },
@@ -100,7 +113,9 @@ rideSchema.index({ pickupLocation: '2dsphere' });
 rideSchema.index({ dropoffLocation: '2dsphere' });
 rideSchema.index({ scheduledTime: 1 });
 rideSchema.index({ status: 1 });
+rideSchema.index({ driver: 1 });
+rideSchema.index({ rating: 1 });
 
 const Ride = mongoose.model('Ride', rideSchema);
 
-module.exports = Ride; 
+module.exports = Ride;

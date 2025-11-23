@@ -212,6 +212,15 @@ router.post('/send', auth, async (req, res) => {
         lastName: receiver.lastName
       }
     });
+    const Notification = require('../models/Notification');
+    const note = await Notification.create({
+      user: receiverId,
+      type: 'message',
+      title: 'New message',
+      body: message,
+      data: { conversationId: conversation._id, rideId }
+    });
+    io.to(`user_${receiverId}`).emit('notification', note);
 
     // Also emit to conversation room
     io.to(`conversation_${conversation._id}`).emit('messageReceived', {

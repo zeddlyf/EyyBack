@@ -63,11 +63,14 @@ router.patch('/driver/availability', auth, async (req, res) => {
     if (req.user.role !== 'driver') {
       return res.status(403).json({ error: 'Only drivers can update availability' });
     }
-    if (req.user.approvalStatus !== 'approved') {
+    // Allow turning OFF availability regardless of approval
+    // Only turning ON requires approval
+    const desired = !!req.body.isAvailable;
+    if (desired === true && req.user.approvalStatus !== 'approved') {
       return res.status(403).json({ error: 'Driver not approved by admin' });
     }
 
-    req.user.isAvailable = req.body.isAvailable;
+    req.user.isAvailable = desired;
     await req.user.save();
     res.json(req.user);
   } catch (error) {
@@ -161,6 +164,36 @@ router.get('/drivers/nearby', auth, async (req, res) => {
   }
 });
 
+// Get all active drivers (optionally filter by city)
+router.get('/drivers/active', auth, async (req, res) => {
+  try {
+    const { city } = req.query;
+    const query = { role: 'driver', isAvailable: true };
+    if (city) {
+      query['address.city'] = new RegExp(city, 'i');
+    }
+    const drivers = await User.find(query).select('-password');
+    res.json(drivers);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get driver location history
+router.get('/driver/:id/location-history', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 100 } = req.query;
+    const DriverLocation = require('../models/DriverLocation');
+    const history = await DriverLocation.find({ driver: id })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+    res.json(history);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // Get user address
 router.get('/address', auth, async (req, res) => {
   try {
@@ -175,21 +208,22 @@ router.get('/address', auth, async (req, res) => {
 });
 
 // Update user address
-router.patch('/address', auth, async (req, res) => {
-  try {
-    const { street, city, province, postalCode, country } = req.body;
-    
-    if (!city || !province) {
-      return res.status(400).json({ error: 'City and province are required' });
-    }
+  router.patch('/address', auth, async (req, res) => {
+    try {
+      const { street, city, province, postalCode, country } = req.body;
+      
+      if (!city || !province) {
+        return res.status(400).json({ error: 'City and province are required' });
+      }
 
-    req.user.address = {
-      street: street || '',
-      city,
-      province,
-      postalCode: postalCode || '',
-      country: country || 'Philippines'
-    };
+      req.user.address = {
+        street: street || req.user.address?.street || '',
+        barangay: req.body.barangay || req.user.address?.barangay || '',
+        city,
+        province,
+        postalCode: postalCode || req.user.address?.postalCode || '',
+        country: country || req.user.address?.country || 'Philippines'
+      };
 
     await req.user.save();
     res.json(req.user.address);
@@ -463,4 +497,4 @@ router.delete('/:id/hard', auth, requireRole('admin'), async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;

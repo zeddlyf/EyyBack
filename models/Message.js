@@ -53,6 +53,11 @@ const messageSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // For TTL after ride completion
+  expiresAt: {
+    type: Date,
+    default: null
+  },
   // For system messages (ride updates, etc.)
   systemData: {
     type: mongoose.Schema.Types.Mixed,
@@ -66,6 +71,8 @@ const messageSchema = new mongoose.Schema({
 messageSchema.index({ conversationId: 1, createdAt: -1 });
 messageSchema.index({ sender: 1, receiver: 1 });
 messageSchema.index({ isRead: 1 });
+// TTL index (MongoDB will delete docs after expiresAt)
+messageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Virtual for formatted timestamp
 messageSchema.virtual('timeAgo').get(function() {
