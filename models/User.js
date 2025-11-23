@@ -80,6 +80,11 @@ const userSchema = new mongoose.Schema({
       type: String,
       trim: true
     },
+    barangay: {
+      type: String,
+      trim: true,
+      default: ''
+    },
     city: {
       type: String,
       required: [true, 'City is required'],
@@ -138,6 +143,23 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   }
+  ,
+  notificationPreferences: {
+    type: Object,
+    default: {
+      system: true,
+      message: true,
+      admin: true,
+      ride: true,
+      payment: true,
+      email: { system: false, message: false, admin: false, ride: false, payment: false },
+      sms: { system: false, message: false, admin: false, ride: false, payment: false }
+    }
+  },
+  pushToken: {
+    type: String,
+    default: ''
+  }
 }, {
   timestamps: true
 });
@@ -161,19 +183,20 @@ userSchema.set('toJSON', { virtuals: true });
 userSchema.set('toObject', { virtuals: true });
 
 // Generate full address before saving
-userSchema.pre('save', function(next) {
-  if (this.address && (this.isModified('address') || this.isNew)) {
-    const addressParts = [];
-    if (this.address.street) addressParts.push(this.address.street);
-    if (this.address.city) addressParts.push(this.address.city);
-    if (this.address.province) addressParts.push(this.address.province);
-    if (this.address.postalCode) addressParts.push(this.address.postalCode);
-    if (this.address.country) addressParts.push(this.address.country);
-    
-    this.address.fullAddress = addressParts.join(', ');
-  }
-  next();
-});
+  userSchema.pre('save', function(next) {
+    if (this.address && (this.isModified('address') || this.isNew)) {
+      const addressParts = [];
+      if (this.address.street) addressParts.push(this.address.street);
+      if (this.address.barangay) addressParts.push(this.address.barangay);
+      if (this.address.city) addressParts.push(this.address.city);
+      if (this.address.province) addressParts.push(this.address.province);
+      if (this.address.postalCode) addressParts.push(this.address.postalCode);
+      if (this.address.country) addressParts.push(this.address.country);
+      
+      this.address.fullAddress = addressParts.join(', ');
+    }
+    next();
+  });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {
@@ -206,4 +229,4 @@ userSchema.methods.toJSON = function() {
 
 const User = mongoose.model('User', userSchema);
 
-module.exports = User; 
+module.exports = User;

@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const http = require('http');
 const socketIo = require('socket.io');
 const User = require('./models/User');
+const DriverLocation = require('./models/DriverLocation');
 require('dotenv').config();
 
 // Check for required environment variables
@@ -57,6 +58,8 @@ const rideRoutes = require('./routes/rides');
 const paymentRoutes = require('./routes/payment');
 const walletRoutes = require('./routes/wallet');
 const messagingRoutes = require('./routes/messaging');
+const notificationRoutes = require('./routes/notifications');
+const emergencyRoutes = require('./routes/emergency');
 
 // Health check endpoint for Railway
 app.get('/api/health', (req, res) => {
@@ -83,10 +86,29 @@ app.use('/api/rides', rideRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/wallets', walletRoutes);
 app.use('/api/messaging', messagingRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/emergency', emergencyRoutes);
 
 // Socket.io connection and event handlers
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
+
+  // Optional auth via token in handshake
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.data = { userId: decoded._id };
+    } catch (err) {
+      console.warn('Socket auth failed, disconnecting:', err.message);
+      socket.disconnect(true);
+      return;
+    }
+  } else {
+    console.warn('Socket connection without token, disconnecting');
+    socket.disconnect(true);
+    return;
+  }
 
   socket.on('joinUserRoom', (userId) => {
     socket.join(`user_${userId}`);
@@ -126,7 +148,7 @@ io.on('connection', (socket) => {
 
   socket.on('driverLocationUpdate', async (data) => {
     try {
-      const { driverId, location, rideId } = data;
+      const { driverId, location, rideId, hasPassenger, status } = data;
       
       // Update driver location in database
       await User.findByIdAndUpdate(driverId, {
@@ -136,11 +158,29 @@ io.on('connection', (socket) => {
         }
       });
 
+      // Store location history
+      await DriverLocation.create({
+        driver: driverId,
+        location: { type: 'Point', coordinates: [location.longitude, location.latitude] },
+        status: status || (rideId ? 'on-trip' : 'available'),
+        hasPassenger: typeof hasPassenger === 'boolean' ? hasPassenger : !!rideId,
+        rideId: rideId || null,
+      });
+
+      const payload = {
+        driverId,
+        location,
+        rideId: rideId || null,
+        hasPassenger: typeof hasPassenger === 'boolean' ? hasPassenger : !!rideId,
+        status: status || (rideId ? 'on-trip' : 'available'),
+        timestamp: new Date().toISOString(),
+      };
+
       if (rideId) {
-        io.to(`ride_${rideId}`).emit('driverLocationChanged', { driverId, location });
-      } else {
-        socket.broadcast.emit('driverLocationChanged', { driverId, location });
+        io.to(`ride_${rideId}`).emit('driverLocationChanged', payload);
       }
+      // Broadcast to all listeners for admin/tracking views
+      socket.broadcast.emit('driverLocationChanged', payload);
     } catch (error) {
       console.error('Error updating driver location:', error);
       socket.emit('error', { message: 'Failed to update location' });
@@ -163,4 +203,4 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Public URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
-}); 
+});

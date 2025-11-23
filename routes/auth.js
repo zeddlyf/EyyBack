@@ -140,4 +140,22 @@ router.get('/me', auth, async (req, res) => {
   }
 });
 
-module.exports = router; 
+// Renew token (sliding session)
+router.post('/renew', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const token = jwt.sign(
+      { _id: user._id.toString() },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    res.json({ user: user.toJSON(), token });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+module.exports = router;
