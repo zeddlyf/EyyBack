@@ -47,6 +47,42 @@ router.get('/contacts', auth, async (req, res) => {
   }
 });
 
+// Admin/owner: get aggregated driver emergency details
+router.get('/driver/:id/details', auth, async (req, res) => {
+  try {
+    const requester = await User.findById(req.user._id).select('role');
+    const targetId = req.params.id;
+    if (!requester || (requester.role !== 'admin' && String(req.user._id) !== String(targetId))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const driver = await User.findById(targetId).select('firstName lastName phoneNumber updatedAt role');
+    if (!driver) return res.status(404).json({ error: 'Driver not found' });
+    const contacts = await EmergencyContact.find({ owner: targetId }).sort({ priority: 1, createdAt: -1 });
+    const emergency = contacts.map(c => ({
+      _id: c._id,
+      name: c.name,
+      phoneMasked: maskPhone(decrypt(c.phoneEncrypted)),
+      priority: c.priority,
+      enabled: c.enabled,
+      updatedAt: c.updatedAt,
+    }));
+    const secondary = emergency[0]?.phoneMasked || '';
+    const lastUpdated = new Date(Math.max(
+      driver.updatedAt ? new Date(driver.updatedAt).getTime() : 0,
+      ...emergency.map(e => new Date(e.updatedAt || driver.updatedAt || Date.now()).getTime())
+    )).toISOString();
+    res.json({
+      driverName: `${driver.firstName} ${driver.lastName}`,
+      primaryContact: driver.phoneNumber,
+      secondaryContact: secondary,
+      emergencyContacts: emergency,
+      lastUpdated,
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 router.post('/contacts', auth, async (req, res) => {
   try {
     const current = await EmergencyContact.countDocuments({ owner: req.user._id });
@@ -141,6 +177,19 @@ router.post('/alert', auth, async (req, res) => {
     }
     const alertDoc = await EmergencyAlert.create({ initiator: req.user._id, role: user.role, type, message: body, location, vehicle, recipients });
     res.status(201).json({ alertId: alertDoc._id, recipients });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Accident detection hook (external sensors can POST here)
+router.post('/accident', auth, async (req, res) => {
+  try {
+    const { driverId, location, vehicle } = req.body || {};
+    const targetId = driverId || req.user._id;
+    const io = req.app.get('io');
+    io.to(`user_${targetId}`).emit('accidentDetected', { driverId: targetId, location: location || {}, vehicle: vehicle || {} });
+    res.json({ ok: true });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
