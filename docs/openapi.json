@@ -1,0 +1,18 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "EyyBack Contacts API", "version": "1.0.0" },
+  "paths": {
+    "/api/v1/contacts": {
+      "get": { "summary": "List contacts", "responses": { "200": { "description": "OK" } } },
+      "post": { "summary": "Create contact", "responses": { "201": { "description": "Created" } } }
+    },
+    "/api/v1/contacts/{id}": {
+      "get": { "summary": "Get contact", "responses": { "200": { "description": "OK" }, "404": { "description": "Not Found" } } },
+      "put": { "summary": "Update contact", "responses": { "200": { "description": "OK" } } },
+      "delete": { "summary": "Soft delete contact", "responses": { "200": { "description": "OK" } } }
+    },
+    "/api/v1/contacts/user/{type}": {
+      "get": { "summary": "List by user type", "responses": { "200": { "description": "OK" } } }
+    }
+  }
+}

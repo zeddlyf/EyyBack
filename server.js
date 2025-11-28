@@ -60,6 +60,9 @@ const walletRoutes = require('./routes/wallet');
 const messagingRoutes = require('./routes/messaging');
 const notificationRoutes = require('./routes/notifications');
 const emergencyRoutes = require('./routes/emergency');
+const contactsV1Routes = require('./routes/v1/contacts');
+const swaggerUi = require('swagger-ui-express');
+const openapi = require('./docs/openapi.json');
 
 // Health check endpoint for Railway
 app.get('/api/health', (req, res) => {
@@ -88,6 +91,8 @@ app.use('/api/wallets', walletRoutes);
 app.use('/api/messaging', messagingRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/emergency', emergencyRoutes);
+app.use('/api/v1/contacts', contactsV1Routes);
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapi));
 
 // Socket.io connection and event handlers
 io.on('connection', (socket) => {
