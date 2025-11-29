@@ -1,1 +1,34 @@
 .env
+.env.*
+!.env.example
+
+# Node dependencies and logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Coverage and build outputs
+coverage/
+.nyc_output/
+dist/
+build/
+
+# Tooling caches
+.eslintcache
+
+# OS and IDE artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Expo local files
+.expo/
+
+# TLS / key files
+*.pem
+*.key
+*.crt
