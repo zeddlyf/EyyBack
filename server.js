@@ -59,7 +59,6 @@ const paymentRoutes = require('./routes/payment');
 const walletRoutes = require('./routes/wallet');
 const messagingRoutes = require('./routes/messaging');
 const notificationRoutes = require('./routes/notifications');
-const emergencyRoutes = require('./routes/emergency');
 const contactsV1Routes = require('./routes/v1/contacts');
 const swaggerUi = require('swagger-ui-express');
 const openapi = require('./docs/openapi.json');
@@ -90,7 +89,6 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/wallets', walletRoutes);
 app.use('/api/messaging', messagingRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/emergency', emergencyRoutes);
 app.use('/api/v1/contacts', contactsV1Routes);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapi));
 
