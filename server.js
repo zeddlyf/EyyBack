@@ -39,18 +39,27 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI, {
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-})
-  .then(() => {
-    console.log('Successfully connected to MongoDB');
+// Connect to MongoDB (non-blocking for healthcheck)
+const connectMongoDB = () => {
+  mongoose.connect(MONGODB_URI, {
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
   })
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+    .then(() => {
+      console.log('Successfully connected to MongoDB');
+    })
+    .catch(err => {
+      console.error('MongoDB connection error:', err);
+      console.error('Server will continue but database operations may fail');
+      console.error('Retrying MongoDB connection in 10 seconds...');
+      // Retry connection in background
+      setTimeout(() => {
+        connectMongoDB();
+      }, 10000);
+    });
+};
+
+connectMongoDB();
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -66,9 +75,11 @@ const openapi = require('./docs/openapi.json');
 
 // Health check endpoint for Railway
 app.get('/api/health', (req, res) => {
+  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   res.status(200).json({ 
     status: 'OK', 
     message: 'EyyBack API is running',
+    dbStatus: dbStatus,
     timestamp: new Date().toISOString()
   });
 });
@@ -207,4 +218,5 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Public URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
+  console.log('Healthcheck available at /api/health');
 });
