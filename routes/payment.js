@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Payment = require('../models/Payment');
+const Ride = require('../models/Ride');
 const auth = require('../middleware/auth');
 const { encrypt } = require('../services/encryption');
 const AuditLog = require('../models/AuditLog');
@@ -110,6 +111,121 @@ router.post('/:id/reconcile', auth, auth.requireRole('admin'), async (req, res) 
     res.status(400).json({ error: err.message })
   }
 })
+
+// Admin: Get all payments (for earnings analytics)
+router.get('/admin/all', auth, auth.requireRole('admin'), async (req, res) => {
+  try {
+    const { startDate, endDate, status, method } = req.query;
+    const query = {};
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    if (status) query.status = status;
+    if (method) query.method = method;
+    
+    const payments = await Payment.find(query)
+      .populate('user', 'firstName lastName email role')
+      .populate('ride')
+      .sort({ date: -1 });
+    
+    res.json(payments);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Get earnings analytics
+router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) => {
+  try {
+    const { startDate, endDate, groupBy = 'day' } = req.query;
+    const query = { status: 'PAID' };
+    
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+    
+    const payments = await Payment.find(query)
+      .populate('user', 'firstName lastName role')
+      .populate('ride', 'fare status');
+    
+    // Calculate total earnings
+    const totalEarnings = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    
+    // Calculate earnings by driver (from rides)
+    const driverEarnings = {};
+    const rideIds = payments.filter(p => p.ride).map(p => p.ride);
+    const rides = await Ride.find({ _id: { $in: rideIds } }).populate('driver', 'firstName lastName');
+    const rideMap = {};
+    rides.forEach(ride => {
+      rideMap[ride._id.toString()] = ride;
+    });
+    
+    payments.forEach(payment => {
+      if (payment.ride) {
+        const ride = rideMap[payment.ride.toString()] || payment.ride;
+        if (ride && ride.driver) {
+          const driverId = ride.driver._id ? ride.driver._id.toString() : ride.driver.toString();
+          if (!driverEarnings[driverId]) {
+            const driver = ride.driver._id ? ride.driver : null;
+            driverEarnings[driverId] = {
+              driverId,
+              driverName: driver ? `${driver.firstName} ${driver.lastName}` : 'Unknown',
+              total: 0,
+              rides: 0
+            };
+          }
+          driverEarnings[driverId].total += ride.fare || payment.amount || 0;
+          driverEarnings[driverId].rides += 1;
+        }
+      }
+    });
+    
+    // Group by time period
+    const earningsByPeriod = {};
+    payments.forEach(payment => {
+      const date = new Date(payment.date || payment.createdAt);
+      let key;
+      
+      if (groupBy === 'day') {
+        key = date.toISOString().split('T')[0];
+      } else if (groupBy === 'week') {
+        const weekStart = new Date(date);
+        weekStart.setDate(date.getDate() - date.getDay());
+        key = weekStart.toISOString().split('T')[0];
+      } else if (groupBy === 'month') {
+        key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      }
+      
+      if (!earningsByPeriod[key]) {
+        earningsByPeriod[key] = { period: key, total: 0, count: 0 };
+      }
+      earningsByPeriod[key].total += payment.amount || 0;
+      earningsByPeriod[key].count += 1;
+    });
+    
+    // Calculate platform commission (assuming 20% commission)
+    const commissionRate = 0.20;
+    const platformEarnings = totalEarnings * commissionRate;
+    const driverTotalEarnings = totalEarnings - platformEarnings;
+    
+    res.json({
+      totalEarnings,
+      platformEarnings,
+      driverTotalEarnings,
+      totalTransactions: payments.length,
+      earningsByPeriod: Object.values(earningsByPeriod).sort((a, b) => a.period.localeCompare(b.period)),
+      driverEarnings: Object.values(driverEarnings).sort((a, b) => b.total - a.total),
+      payments: payments.slice(0, 100) // Limit to recent 100 for performance
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Delete a payment by ID (only if owned by user)
 router.delete('/:id', auth, async (req, res) => {

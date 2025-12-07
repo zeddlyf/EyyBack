@@ -9,6 +9,7 @@ const User = require('./models/User');
 const DriverLocation = require('./models/DriverLocation');
 require('dotenv').config();
 
+
 // Check for required environment variables
 const requiredEnvVars = ['JWT_SECRET', 'MONGODB_URI'];
 const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
@@ -86,7 +87,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/payments', paymentRoutes);
-app.use('/api/wallets', walletRoutes);
+app.use('/api/wallet', walletRoutes);
 app.use('/api/messaging', messagingRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/v1/contacts', contactsV1Routes);

@@ -1,32 +1,144 @@
-/** this is the Wallet   for payment */
-
 const mongoose = require('mongoose');
+
+const transactionSchema = new mongoose.Schema({
+    type: {
+        type: String,
+        enum: ['TOPUP', 'PAYMENT', 'CASHOUT', 'REFUND'],
+        required: true
+    },
+    amount: {
+        type: Number,
+        required: true,
+        min: 0
+    },
+    status: {
+        type: String,
+        enum: ['PENDING', 'COMPLETED', 'FAILED', 'CANCELLED'],
+        default: 'PENDING'
+    },
+    referenceId: {
+        type: String,
+        required: true,
+        unique: true
+    },
+    xenditId: String,
+    paymentMethod: String,
+    description: String,
+    metadata: mongoose.Schema.Types.Mixed
+}, { timestamps: true });
 
 const walletSchema = new mongoose.Schema({
     user: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true
-    },
-    type: {
-        type: String,
         required: true,
-        trim: true
+        unique: true
     },
-    amount: {
+    balance: {
         type: Number,
-        required: true,
-        min: [0, 'Amount must be positive']
+        default: 0,
+        min: 0
     },
     currency: {
         type: String,
         default: 'PHP',
-        uppercase: true,
-        trim: true
-    }
+        uppercase: true
+    },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    transactions: [transactionSchema]
 }, {
-    timestamps: true // Adds createdAt and updatedAt fields
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
 });
+
+// Add index for faster lookups
+walletSchema.index({ user: 1 });
+walletSchema.index({ 'transactions.referenceId': 1 }, { unique: true });
+
+// Method to add funds to wallet
+walletSchema.methods.addFunds = async function(amount, transactionData) {
+    if (amount <= 0) {
+        throw new Error('Amount must be positive');
+    }
+    
+    const transaction = {
+        type: 'TOPUP',
+        amount,
+        status: 'COMPLETED',
+        referenceId: transactionData.referenceId,
+        xenditId: transactionData.xenditId,
+        paymentMethod: transactionData.paymentMethod,
+        description: transactionData.description,
+        metadata: transactionData.metadata
+    };
+
+    this.balance += amount;
+    this.transactions.push(transaction);
+    
+    await this.save();
+    return this;
+};
+
+// Method to deduct funds from wallet
+walletSchema.methods.deductFunds = async function(amount, transactionData) {
+    if (amount <= 0) {
+        throw new Error('Amount must be positive');
+    }
+    
+    if (this.balance < amount) {
+        throw new Error('Insufficient balance');
+    }
+
+    const transaction = {
+        type: transactionData.type || 'PAYMENT',
+        amount: -amount, // Store as negative for deductions
+        status: 'COMPLETED',
+        referenceId: transactionData.referenceId,
+        description: transactionData.description,
+        metadata: transactionData.metadata
+    };
+
+    this.balance -= amount;
+    this.transactions.push(transaction);
+    
+    await this.save();
+    return this;
+};
+
+// Method to request cash out
+walletSchema.methods.requestCashOut = async function(amount, transactionData) {
+    if (amount <= 0) {
+        throw new Error('Amount must be positive');
+    }
+    
+    if (this.balance < amount) {
+        throw new Error('Insufficient balance');
+    }
+
+    const transaction = {
+        type: 'CASHOUT',
+        amount: -amount,
+        status: 'PENDING', // Will be updated when Xendit processes the payout
+        referenceId: transactionData.referenceId,
+        description: transactionData.description,
+        metadata: transactionData.metadata
+    };
+
+    this.balance -= amount;
+    this.transactions.push(transaction);
+    
+    await this.save();
+    return this;
+};
+
+// Static method to get wallet by user ID
+walletSchema.statics.findByUserId = function(userId) {
+    return this.findOne({ user: userId });
+};
 
 const Wallet = mongoose.model('Wallet', walletSchema);
 
