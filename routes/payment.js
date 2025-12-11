@@ -76,43 +76,7 @@ router.get('/', auth, async (req, res) => {
     }
 });
 
-// Get a payment by ID (only if owned by user)
-router.get('/:id', auth, async (req, res) => {
-    try {
-        const payment = await Payment.findOne({ _id: req.params.id, user: req.user._id }).populate('user ride wallet');
-        if (!payment) return res.status(404).json({ error: 'Payment not found' });
-        res.json(payment);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Admin reconciliation: fetch latest status from Xendit and update
-router.post('/:id/reconcile', auth, auth.requireRole('admin'), async (req, res) => {
-  try {
-    const payment = await Payment.findById(req.params.id)
-    if (!payment) return res.status(404).json({ error: 'Payment not found' })
-    let latest = null
-    if (payment.method === 'invoice') latest = await xendit.getInvoice(payment.providerId)
-    if (payment.method === 'ewallet') latest = await xendit.getEwalletCharge(payment.providerId)
-    if (payment.method === 'credit_card') latest = await xendit.getCardCharge(payment.providerId)
-    if (!latest) return res.status(400).json({ error: 'Unsupported method for reconciliation' })
-    const before = payment.status
-    let status = before
-    if (payment.method === 'invoice') status = latest.status === 'PAID' ? 'PAID' : latest.status === 'EXPIRED' ? 'EXPIRED' : before
-    if (payment.method === 'ewallet') status = latest.status === 'SUCCEEDED' ? 'PAID' : latest.status === 'FAILED' ? 'FAILED' : before
-    if (payment.method === 'credit_card') status = ['CAPTURED','AUTHORIZED'].includes(latest.status) ? 'PAID' : latest.status === 'FAILED' ? 'FAILED' : before
-    payment.status = status
-    payment.webhookPayloadEnc = encrypt(JSON.stringify(latest))
-    await payment.save()
-    await AuditLog.create({ resourceType: 'Payment', resourceId: payment._id.toString(), actorId: req.user._id.toString(), action: 'update', changes: { from: before, to: status } })
-    res.json(payment)
-  } catch (err) {
-    res.status(400).json({ error: err.message })
-  }
-})
-
-// Admin: Get all payments (for earnings analytics)
+// Admin: Get all payments (for earnings analytics) - MUST be before /:id route
 router.get('/admin/all', auth, auth.requireRole('admin'), async (req, res) => {
   try {
     const { startDate, endDate, status, method } = req.query;
@@ -137,7 +101,7 @@ router.get('/admin/all', auth, auth.requireRole('admin'), async (req, res) => {
   }
 });
 
-// Admin: Get earnings analytics
+// Admin: Get earnings analytics - MUST be before /:id route
 router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) => {
   try {
     const { startDate, endDate, groupBy = 'day' } = req.query;
@@ -225,6 +189,42 @@ router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) 
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Admin reconciliation: fetch latest status from Xendit and update
+router.post('/:id/reconcile', auth, auth.requireRole('admin'), async (req, res) => {
+  try {
+    const payment = await Payment.findById(req.params.id)
+    if (!payment) return res.status(404).json({ error: 'Payment not found' })
+    let latest = null
+    if (payment.method === 'invoice') latest = await xendit.getInvoice(payment.providerId)
+    if (payment.method === 'ewallet') latest = await xendit.getEwalletCharge(payment.providerId)
+    if (payment.method === 'credit_card') latest = await xendit.getCardCharge(payment.providerId)
+    if (!latest) return res.status(400).json({ error: 'Unsupported method for reconciliation' })
+    const before = payment.status
+    let status = before
+    if (payment.method === 'invoice') status = latest.status === 'PAID' ? 'PAID' : latest.status === 'EXPIRED' ? 'EXPIRED' : before
+    if (payment.method === 'ewallet') status = latest.status === 'SUCCEEDED' ? 'PAID' : latest.status === 'FAILED' ? 'FAILED' : before
+    if (payment.method === 'credit_card') status = ['CAPTURED','AUTHORIZED'].includes(latest.status) ? 'PAID' : latest.status === 'FAILED' ? 'FAILED' : before
+    payment.status = status
+    payment.webhookPayloadEnc = encrypt(JSON.stringify(latest))
+    await payment.save()
+    await AuditLog.create({ resourceType: 'Payment', resourceId: payment._id.toString(), actorId: req.user._id.toString(), action: 'update', changes: { from: before, to: status } })
+    res.json(payment)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Get a payment by ID (only if owned by user) - MUST be after admin routes
+router.get('/:id', auth, async (req, res) => {
+    try {
+        const payment = await Payment.findOne({ _id: req.params.id, user: req.user._id }).populate('user ride wallet');
+        if (!payment) return res.status(404).json({ error: 'Payment not found' });
+        res.json(payment);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Delete a payment by ID (only if owned by user)
