@@ -105,20 +105,80 @@ router.get('/admin/all', auth, auth.requireRole('admin'), async (req, res) => {
 router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) => {
   try {
     const { startDate, endDate, groupBy = 'day' } = req.query;
-    const query = { status: 'PAID' };
+    const Wallet = require('../models/Wallet');
+    const User = require('../models/User');
     
+    // Query for payments
+    const paymentQuery = { status: 'PAID' };
     if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
+      paymentQuery.date = {};
+      if (startDate) paymentQuery.date.$gte = new Date(startDate);
+      if (endDate) paymentQuery.date.$lte = new Date(endDate);
     }
     
-    const payments = await Payment.find(query)
+    const payments = await Payment.find(paymentQuery)
       .populate('user', 'firstName lastName role')
       .populate('ride', 'fare status');
     
-    // Calculate total earnings
+    // Get all wallets and filter transactions in memory (MongoDB nested array queries are complex)
+    const wallets = await Wallet.find({})
+      .populate('user', 'firstName lastName email role');
+    
+    // Extract and format wallet transactions (top-ups only)
+    const walletTransactions = [];
+    const start = startDate ? new Date(startDate) : null;
+    const end = endDate ? new Date(endDate) : null;
+    
+    wallets.forEach(wallet => {
+      if (!wallet.transactions || !Array.isArray(wallet.transactions)) return;
+      
+      wallet.transactions.forEach(tx => {
+        if (tx.type === 'TOPUP' && tx.status === 'COMPLETED') {
+          const txDate = new Date(tx.createdAt || tx.timestamp || tx.date);
+          
+          // Filter by date range if provided
+          if ((!start || txDate >= start) && (!end || txDate <= end)) {
+            walletTransactions.push({
+              _id: tx._id || tx.id,
+              type: 'TOPUP',
+              amount: tx.amount || 0,
+              status: 'COMPLETED',
+              date: txDate,
+              createdAt: tx.createdAt || tx.timestamp || txDate,
+              user: wallet.user,
+              description: tx.description || 'Wallet Top-Up',
+              paymentMethod: tx.paymentMethod || 'E-Wallet',
+              referenceId: tx.referenceId,
+              xenditId: tx.xenditId
+            });
+          }
+        }
+      });
+    });
+    
+    // Combine payments and wallet transactions
+    const allTransactions = [
+      ...payments.map(p => ({
+        ...p.toObject(),
+        type: 'PAYMENT',
+        transactionType: 'payment'
+      })),
+      ...walletTransactions.map(tx => ({
+        ...tx,
+        transactionType: 'topup',
+        method: tx.paymentMethod
+      }))
+    ].sort((a, b) => {
+      const dateA = new Date(a.date || a.createdAt || 0);
+      const dateB = new Date(b.date || b.createdAt || 0);
+      return dateB - dateA;
+    });
+    
+    // Calculate total earnings (from payments only - ride payments)
     const totalEarnings = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    
+    // Calculate total top-ups
+    const totalTopUps = walletTransactions.reduce((sum, tx) => sum + (tx.amount || 0), 0);
     
     // Calculate earnings by driver (from rides)
     const driverEarnings = {};
@@ -149,10 +209,10 @@ router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) 
       }
     });
     
-    // Group by time period
+    // Group by time period (include both payments and top-ups)
     const earningsByPeriod = {};
-    payments.forEach(payment => {
-      const date = new Date(payment.date || payment.createdAt);
+    allTransactions.forEach(transaction => {
+      const date = new Date(transaction.date || transaction.createdAt);
       let key;
       
       if (groupBy === 'day') {
@@ -166,27 +226,35 @@ router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) 
       }
       
       if (!earningsByPeriod[key]) {
-        earningsByPeriod[key] = { period: key, total: 0, count: 0 };
+        earningsByPeriod[key] = { period: key, total: 0, count: 0, topUps: 0 };
       }
-      earningsByPeriod[key].total += payment.amount || 0;
+      earningsByPeriod[key].total += transaction.amount || 0;
       earningsByPeriod[key].count += 1;
+      if (transaction.type === 'TOPUP' || transaction.transactionType === 'topup') {
+        earningsByPeriod[key].topUps += transaction.amount || 0;
+      }
     });
     
-    // Calculate platform commission (assuming 20% commission)
+    // Calculate platform commission (assuming 20% commission on ride payments only)
     const commissionRate = 0.20;
     const platformEarnings = totalEarnings * commissionRate;
     const driverTotalEarnings = totalEarnings - platformEarnings;
     
     res.json({
       totalEarnings,
+      totalTopUps,
       platformEarnings,
       driverTotalEarnings,
-      totalTransactions: payments.length,
+      totalTransactions: payments.length + walletTransactions.length,
+      totalPayments: payments.length,
+      totalTopUpTransactions: walletTransactions.length,
       earningsByPeriod: Object.values(earningsByPeriod).sort((a, b) => a.period.localeCompare(b.period)),
       driverEarnings: Object.values(driverEarnings).sort((a, b) => b.total - a.total),
-      payments: payments.slice(0, 100) // Limit to recent 100 for performance
+      payments: payments.slice(0, 50), // Limit to recent 50 for performance
+      transactions: allTransactions.slice(0, 100) // Include both payments and top-ups
     });
   } catch (err) {
+    console.error('Earnings analytics error:', err);
     res.status(500).json({ error: err.message });
   }
 });
