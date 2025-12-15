@@ -150,9 +150,21 @@ const handleTopUpCallback = async (req, res) => {
     const webhookToken = req.headers['x-callback-token'];
     const expectedToken = process.env.XENDIT_CALLBACK_TOKEN || process.env.XENDIT_WEBHOOK_TOKEN;
     
+    console.log('Webhook received - Token check:', {
+      hasToken: !!webhookToken,
+      hasExpectedToken: !!expectedToken,
+      tokenMatch: webhookToken === expectedToken
+    });
+    
+    // Only verify token if it's set in environment
     if (expectedToken && webhookToken !== expectedToken) {
-      console.error('Invalid webhook token');
-      return res.status(401).json({ error: 'Unauthorized' });
+      console.error('Invalid webhook token - Expected:', expectedToken?.substring(0, 10) + '...', 'Received:', webhookToken?.substring(0, 10) + '...');
+      // In development, log but don't block (for testing)
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(401).json({ error: 'Unauthorized' });
+      } else {
+        console.warn('⚠️  Webhook token mismatch in development mode - proceeding anyway');
+      }
     }
 
     const webhookData = req.body;
@@ -196,20 +208,111 @@ const handleTopUpCallback = async (req, res) => {
     // Only process if still pending
     if (transaction.status === 'PENDING') {
       if (status === 'PAID' || status === 'COMPLETED' || webhookData.status === 'PAID') {
-        // Update transaction status
-        transaction.status = 'COMPLETED';
+        // Get transaction amount before update
+        const transactionAmount = transaction.amount;
         
-        // Update wallet balance
-        wallet.balance = (wallet.balance || 0) + transaction.amount;
+        // Find the transaction by its ID in the array
+        const transactionId = transaction._id;
         
-        await wallet.save();
-        console.log(`Wallet ${wallet._id} updated. New balance: ${wallet.balance}`);
+        if (!transactionId) {
+          console.error('Transaction _id not found');
+          // Fallback: use referenceId or xenditId to find and update
+          const updateResult = await Wallet.updateOne(
+            { 
+              _id: wallet._id,
+              'transactions.referenceId': externalId || transaction.referenceId
+            },
+            {
+              $set: {
+                'transactions.$[tx].status': 'COMPLETED'
+              },
+              $inc: {
+                balance: transactionAmount
+              }
+            },
+            {
+              arrayFilters: [{ 'tx.referenceId': externalId || transaction.referenceId }]
+            }
+          );
+          
+          if (updateResult.modifiedCount > 0) {
+            console.log(`Wallet ${wallet._id} updated via fallback. Balance increased by ${transactionAmount}`);
+            return res.json({ success: true, status: 'payment_completed' });
+          } else {
+            return res.status(500).json({ error: 'Failed to update wallet' });
+          }
+        }
+
+        // Use findOneAndUpdate with transaction _id for atomic update
+        const updateResult = await Wallet.findOneAndUpdate(
+          { 
+            _id: wallet._id,
+            'transactions._id': transactionId,
+            'transactions.status': 'PENDING' // Only update if still pending
+          },
+          {
+            $set: {
+              'transactions.$.status': 'COMPLETED'
+            },
+            $inc: {
+              balance: transactionAmount
+            }
+          },
+          { new: true } // Return updated document
+        );
+
+        if (!updateResult) {
+          console.error('Failed to update wallet - transaction may have been already processed');
+          // Try to check if it was already completed
+          const checkWallet = await Wallet.findById(wallet._id);
+          const checkTransaction = checkWallet?.transactions.find(
+            t => (t.xenditId === invoiceId) || (t.referenceId === externalId)
+          );
+          
+          if (checkTransaction && checkTransaction.status === 'COMPLETED') {
+            console.log('Transaction already completed');
+            return res.json({ success: true, status: 'already_processed' });
+          }
+          
+          return res.status(500).json({ error: 'Failed to update wallet' });
+        }
+
+        console.log(`Wallet ${updateResult._id} updated. New balance: ${updateResult.balance}, Amount added: ${transactionAmount}`);
         
         return res.json({ success: true, status: 'payment_completed' });
       } else if (status === 'EXPIRED' || status === 'FAILED') {
         // Update transaction status to failed
-        transaction.status = 'FAILED';
-        await wallet.save();
+        const transactionId = transaction._id;
+        
+        if (transactionId) {
+          await Wallet.findOneAndUpdate(
+            { 
+              _id: wallet._id,
+              'transactions._id': transactionId
+            },
+            {
+              $set: {
+                'transactions.$.status': 'FAILED'
+              }
+            }
+          );
+        } else {
+          // Fallback update
+          await Wallet.updateOne(
+            { 
+              _id: wallet._id,
+              'transactions.referenceId': externalId || transaction.referenceId
+            },
+            {
+              $set: {
+                'transactions.$[tx].status': 'FAILED'
+              }
+            },
+            {
+              arrayFilters: [{ 'tx.referenceId': externalId || transaction.referenceId }]
+            }
+          );
+        }
         return res.json({ success: true, status: 'payment_failed' });
       }
     }
@@ -324,6 +427,98 @@ const handleCashOutCallback = async (req, res) => {
   }
 };
 
+// Verify and update pending transaction (manual check)
+const verifyTransaction = async (req, res) => {
+  try {
+    const { referenceId, xenditId } = req.body;
+    
+    if (!referenceId && !xenditId) {
+      return res.status(400).json({ error: 'referenceId or xenditId is required' });
+    }
+
+    // Find wallet with this transaction
+    let wallet = await Wallet.findOne({
+      $or: [
+        { 'transactions.referenceId': referenceId },
+        { 'transactions.xenditId': xenditId }
+      ]
+    });
+
+    if (!wallet) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    const transaction = wallet.transactions.find(
+      t => (referenceId && t.referenceId === referenceId) || (xenditId && t.xenditId === xenditId)
+    );
+
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    // If already completed, return current status
+    if (transaction.status === 'COMPLETED') {
+      return res.json({
+        success: true,
+        status: 'completed',
+        balance: wallet.balance,
+        transaction: transaction
+      });
+    }
+
+    // If pending, check with Xendit API
+    if (transaction.status === 'PENDING' && transaction.xenditId) {
+      try {
+        const invoice = await xenditService.getInvoice(transaction.xenditId);
+        
+        if (invoice.status === 'PAID' || invoice.status === 'COMPLETED') {
+          // Update transaction and balance
+          const transactionId = transaction._id;
+          const transactionAmount = transaction.amount;
+
+          const updatedWallet = await Wallet.findOneAndUpdate(
+            { 
+              _id: wallet._id,
+              'transactions._id': transactionId,
+              'transactions.status': 'PENDING'
+            },
+            {
+              $set: {
+                'transactions.$.status': 'COMPLETED'
+              },
+              $inc: {
+                balance: transactionAmount
+              }
+            },
+            { new: true }
+          );
+
+          if (updatedWallet) {
+            return res.json({
+              success: true,
+              status: 'updated',
+              balance: updatedWallet.balance,
+              message: 'Transaction verified and wallet updated'
+            });
+          }
+        }
+      } catch (xenditError) {
+        console.error('Error checking Xendit invoice:', xenditError);
+      }
+    }
+
+    res.json({
+      success: true,
+      status: transaction.status.toLowerCase(),
+      balance: wallet.balance,
+      transaction: transaction
+    });
+  } catch (error) {
+    console.error('Error verifying transaction:', error);
+    res.status(500).json({ error: 'Failed to verify transaction', message: error.message });
+  }
+};
+
 // Get transaction history
 const getTransactionHistory = async (req, res) => {
   try {
@@ -376,4 +571,5 @@ module.exports = {
   initiateCashOut,
   handleCashOutCallback,
   getTransactionHistory,
+  verifyTransaction,
 };

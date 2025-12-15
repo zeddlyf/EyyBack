@@ -41,4 +41,7 @@ router.get('/transactions', auth, [
   param('limit').optional().isInt({ min: 1, max: 100 }).toInt()
 ], walletController.getTransactionHistory);
 
+// Verify and update pending transaction (manual check)
+router.post('/verify-transaction', auth, walletController.verifyTransaction);
+
 module.exports = router;
