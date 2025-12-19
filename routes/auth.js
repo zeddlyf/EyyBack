@@ -279,8 +279,14 @@ router.post('/password/request', async (req, res) => {
       const { subject, text, html } = buildOtpEmail({ name: user.firstName, otp, locale });
       await sendMail({ to: user.email, subject, text, html });
       deliveredChannels.push('email');
+      console.log(`Password reset OTP email sent successfully to ${user.email}`);
     } catch (err) {
       console.error('Failed to send reset email:', err.message);
+      console.error('Email error details:', err);
+      // If SMTP is not configured, log a clear error
+      if (err.message && err.message.includes('SMTP credentials')) {
+        console.error('⚠️ SMTP credentials are not configured. Please set SMTP_USER and SMTP_PASS environment variables.');
+      }
     }
 
     // SMS (optional)
