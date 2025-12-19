@@ -31,6 +31,42 @@ function buildOtpEmail({ name, otp, locale = 'en' }) {
   };
 }
 
+function buildRegistrationConfirmationEmail({ name, verificationToken, locale = 'en', baseUrl = process.env.BASE_URL || 'http://localhost:3000' }) {
+  const verificationLink = `${baseUrl}/api/auth/verify-email?token=${verificationToken}`;
+  const intro = locale === 'fil'
+    ? `Hello ${name || 'user'}, salamat sa pagrehistro sa EyyTrike!`
+    : `Hello ${name || 'user'}, thank you for registering with EyyTrike!`;
+  const instruction = locale === 'fil'
+    ? `Mangyaring i-click ang link sa ibaba upang i-verify ang iyong email address:`
+    : `Please click the link below to verify your email address:`;
+  const alternative = locale === 'fil'
+    ? `Kung hindi mo ma-click ang link, kopyahin at i-paste ito sa iyong browser:`
+    : `If you cannot click the link, copy and paste it into your browser:`;
+  const footer = locale === 'fil'
+    ? `Kung hindi ka nagrehistro sa EyyTrike, maaari mong balewalain ang email na ito.`
+    : `If you did not register for EyyTrike, you can safely ignore this email.`;
+  
+  return {
+    subject: locale === 'fil' ? 'I-verify ang iyong email address - EyyTrike' : 'Verify your email address - EyyTrike',
+    text: `${intro}\n\n${instruction}\n${verificationLink}\n\n${alternative}\n${verificationLink}\n\n${footer}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #333;">${intro}</h2>
+        <p style="color: #666; line-height: 1.6;">${instruction}</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${verificationLink}" 
+             style="background-color: #4CAF50; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+            ${locale === 'fil' ? 'I-verify ang Email' : 'Verify Email'}
+          </a>
+        </div>
+        <p style="color: #666; font-size: 12px; line-height: 1.6;">${alternative}</p>
+        <p style="color: #999; font-size: 11px; word-break: break-all;">${verificationLink}</p>
+        <p style="color: #999; font-size: 12px; margin-top: 30px;">${footer}</p>
+      </div>
+    `,
+  };
+}
+
 function passwordMeetsPolicy(password) {
   return PASSWORD_POLICY_REGEX.test(password || '');
 }
@@ -122,6 +158,27 @@ router.post('/register', async (req, res) => {
       await wallet.save();
     }
 
+    // Generate email verification token
+    const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+    const emailVerificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    user.emailVerificationToken = emailVerificationToken;
+    user.emailVerificationTokenExpires = emailVerificationTokenExpires;
+    await user.save();
+
+    // Send registration confirmation email
+    try {
+      const locale = req.body.locale || 'en';
+      const { subject, text, html } = buildRegistrationConfirmationEmail({
+        name: user.firstName,
+        verificationToken: emailVerificationToken,
+        locale
+      });
+      await sendMail({ to: user.email, subject, text, html });
+    } catch (emailError) {
+      console.error('Failed to send registration confirmation email:', emailError.message);
+      // Don't fail registration if email fails, just log it
+    }
+
     // Generate token
     const token = jwt.sign(
       { _id: user._id.toString() },
@@ -131,7 +188,8 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({
       user: user.toJSON(),
-      token
+      token,
+      message: 'Registration successful. Please check your email to verify your account.'
     });
   } catch (error) {
     if (error.name === 'ValidationError') {
@@ -357,6 +415,78 @@ router.get('/me', auth, async (req, res) => {
     res.json(user.toJSON());
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Verify email address
+router.get('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+    if (!token) {
+      return res.status(400).json({ error: 'Verification token is required' });
+    }
+
+    const user = await User.findOne({
+      emailVerificationToken: token,
+      emailVerificationTokenExpires: { $gt: new Date() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
+    }
+
+    // Mark email as verified and clear token
+    user.emailVerified = true;
+    user.emailVerificationToken = null;
+    user.emailVerificationTokenExpires = null;
+    await user.save();
+
+    res.json({ message: 'Email verified successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// Resend verification email
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email, locale = 'en' } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      // Don't reveal if user exists
+      return res.json({ message: 'If an account exists, a verification email has been sent.' });
+    }
+
+    if (user.emailVerified) {
+      return res.status(400).json({ error: 'Email is already verified' });
+    }
+
+    // Generate new verification token
+    const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+    const emailVerificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    user.emailVerificationToken = emailVerificationToken;
+    user.emailVerificationTokenExpires = emailVerificationTokenExpires;
+    await user.save();
+
+    // Send verification email
+    try {
+      const { subject, text, html } = buildRegistrationConfirmationEmail({
+        name: user.firstName,
+        verificationToken: emailVerificationToken,
+        locale
+      });
+      await sendMail({ to: user.email, subject, text, html });
+      res.json({ message: 'If an account exists, a verification email has been sent.' });
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError.message);
+      res.status(500).json({ error: 'Failed to send verification email' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Server error' });
   }
 });
 
