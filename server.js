@@ -94,7 +94,7 @@ app.get('/', (req, res) => {
 });
 
 // Use routes
-app.use('/auth', authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/rides', rideRoutes);
 app.use('/api/payments', paymentRoutes);
