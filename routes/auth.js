@@ -151,9 +151,9 @@ router.post('/register', async (req, res) => {
     if (role === 'commuter') {
       const wallet = new Wallet({
         user: user._id,
-        type: 'commuter',
-        amount: 500,
-        currency: 'PHP'
+        balance: 500,
+        currency: 'PHP',
+        transactions: []
       });
       await wallet.save();
     }

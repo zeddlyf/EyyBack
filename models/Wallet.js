@@ -18,8 +18,7 @@ const transactionSchema = new mongoose.Schema({
     },
     referenceId: {
         type: String,
-        required: true,
-        unique: true
+        required: true
     },
     xenditId: String,
     paymentMethod: String,
@@ -57,7 +56,13 @@ const walletSchema = new mongoose.Schema({
 
 // Add index for faster lookups
 walletSchema.index({ user: 1 });
-walletSchema.index({ 'transactions.referenceId': 1 }, { unique: true });
+// Only enforce uniqueness for transactions that actually have a referenceId.
+// Use a partial index so documents without transactions or without referenceId
+// (null/undefined) won't collide on the unique constraint.
+walletSchema.index(
+  { 'transactions.referenceId': 1 },
+  { unique: true, partialFilterExpression: { 'transactions.referenceId': { $exists: true } } }
+);
 
 // Method to add funds to wallet
 walletSchema.methods.addFunds = async function(amount, transactionData) {
