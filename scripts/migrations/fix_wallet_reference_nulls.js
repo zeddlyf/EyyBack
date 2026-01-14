@@ -13,7 +13,8 @@
 const mongoose = require('mongoose');
 const Wallet = require('../../models/Wallet');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/test';
+// Prefer explicit MONGO_URI, but fall back to the app's MONGODB_URI if set.
+const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/test';
 
 (async () => {
   try {
@@ -34,8 +35,11 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/test';
       console.warn('Could not drop index (it may not exist or you may not have permissions):', err.message);
     }
 
-    const wallets = await Wallet.find({ 'transactions.referenceId': null });
-    console.log(`Found ${wallets.length} wallet(s) with null transaction referenceId`);
+    // Find wallets that contain transactions with null or missing referenceId
+    const wallets = await Wallet.find({
+      transactions: { $elemMatch: { $or: [ { referenceId: null }, { referenceId: { $exists: false } } ] } }
+    });
+    console.log(`Found ${wallets.length} wallet(s) with null or missing transaction referenceId`);
 
     for (const wallet of wallets) {
       let modified = false;

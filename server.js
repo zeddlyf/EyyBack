@@ -39,6 +39,16 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+// Simple request logger to help debug routing issues (prints method and full path)
+app.use((req, res, next) => {
+  try {
+    console.log(`Incoming request: ${req.method} ${req.originalUrl}`);
+  } catch (e) {
+    // ignore logging errors
+  }
+  next();
+});
+
 // Connect to MongoDB (non-blocking for healthcheck)
 const connectMongoDB = () => {
   mongoose.connect(MONGODB_URI, {
@@ -119,6 +129,46 @@ app.use('/api/messaging', messagingRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/v1/contacts', contactsV1Routes);
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapi));
+
+// Backwards-compatible aliases for clients that use legacy paths (avoid 404s when client uses /wallet)
+const walletController = require('./controllers/walletController');
+const authMiddleware = require('./middleware/auth');
+app.get('/wallet/transactions', authMiddleware, walletController.getTransactionHistory);
+app.get('/wallet', authMiddleware, walletController.getWallet);
+
+// Log registered routes for easier debugging on startup
+(function listRoutes() {
+  try {
+    const routes = [];
+    app._router.stack.forEach(m => {
+      if (m.route && m.route.path) {
+        const methods = Object.keys(m.route.methods).join(',').toUpperCase();
+        routes.push(`${methods} ${m.route.path}`);
+      } else if (m.name === 'router' && m.handle && m.handle.stack) {
+        m.handle.stack.forEach(r => {
+          if (r.route && r.route.path) {
+            const methods = Object.keys(r.route.methods).join(',').toUpperCase();
+            routes.push(`${methods} ${r.route.path}`);
+          }
+        });
+      }
+    });
+    console.log('Registered routes:', routes.join(' | '));
+  } catch (err) {
+    console.warn('Could not enumerate routes:', err.message);
+  }
+})();
+// Catch-all 404 handler to log unmatched requests and return a helpful JSON error
+app.use((req, res) => {
+  console.warn(`Unhandled route: ${req.method} ${req.originalUrl}`);
+  res.status(404).json({ error: 'Not Found', path: req.originalUrl });
+});
+
+// Generic error handler to ensure server errors are logged and a 500 is returned
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err && err.stack ? err.stack : err);
+  res.status(500).json({ error: 'Server error' });
+});
 
 // Socket.io connection and event handlers
 io.on('connection', (socket) => {
