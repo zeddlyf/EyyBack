@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const transactionSchema = new mongoose.Schema({
     type: {
@@ -33,6 +34,11 @@ const walletSchema = new mongoose.Schema({
         required: true,
         unique: true
     },
+    referenceId: {
+        type: String,
+        required: true,
+        default: () => `wallet_${crypto.randomBytes(12).toString('hex')}`
+    },
     balance: {
         type: Number,
         default: 0,
@@ -54,14 +60,32 @@ const walletSchema = new mongoose.Schema({
     toObject: { virtuals: true }
 });
 
+// Ensure wallet.referenceId includes user ID when possible to guarantee per-user uniqueness
+walletSchema.pre('validate', function(next) {
+    try {
+        if (!this.referenceId) {
+            if (this.user) {
+                this.referenceId = `wallet_${this.user}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+            } else {
+                this.referenceId = `wallet_${Date.now()}_${crypto.randomBytes(12).toString('hex')}`;
+            }
+        }
+        next();
+    } catch (err) {
+        next(err);
+    }
+});
 // Add index for faster lookups
 walletSchema.index({ user: 1 });
+// Add unique index for wallet referenceId (partial so existing docs without referenceId are ignored)
+walletSchema.index({ referenceId: 1 }, { unique: true, partialFilterExpression: { referenceId: { $exists: true, $ne: null } } });
 // Only enforce uniqueness for transactions that actually have a referenceId.
-// Use a partial index so documents without transactions or without referenceId
-// (null/undefined) won't collide on the unique constraint.
+// Use a partial index so documents without transactions, or with null/undefined
+// referenceId values won't be included in the unique constraint.
+// Note: $exists:true matches null values, so include $ne:null to exclude them.
 walletSchema.index(
   { 'transactions.referenceId': 1 },
-  { unique: true, partialFilterExpression: { 'transactions.referenceId': { $exists: true } } }
+  { unique: true, partialFilterExpression: { 'transactions.referenceId': { $exists: true, $ne: null } } }
 );
 
 // Method to add funds to wallet
@@ -144,6 +168,64 @@ walletSchema.methods.requestCashOut = async function(amount, transactionData) {
 walletSchema.statics.findByUserId = function(userId) {
     return this.findOne({ user: userId });
 };
+
+// Static helper to fix wallets containing transactions with null/undefined referenceIds
+// Drops any old index on transactions.referenceId, assigns generated IDs to null transactions,
+// and saves updated wallets. Returns the number of wallets updated.
+walletSchema.statics.fixNullTransactionReferenceIds = async function() {
+    const Model = this;
+    try {
+        // Attempt to drop any existing (bad) index on transactions.referenceId
+        try {
+            const indexes = await Model.collection.indexes();
+            const idx = indexes.find(i => i.key && i.key['transactions.referenceId'] === 1);
+            if (idx) {
+                console.log('fixNullTransactionReferenceIds: Dropping index', idx.name);
+                await Model.collection.dropIndex(idx.name);
+            } else {
+                console.log('fixNullTransactionReferenceIds: No transactions.referenceId index found');
+            }
+        } catch (dropErr) {
+            console.warn('fixNullTransactionReferenceIds: Could not drop index (may not exist or insufficient permissions):', dropErr.message);
+        }
+
+        // Find wallets that contain null/undefined transaction referenceIds
+        const wallets = await Model.find({ 'transactions.referenceId': null });
+        console.log(`fixNullTransactionReferenceIds: Found ${wallets.length} wallet(s) with null transaction referenceId`);
+
+        let updatedCount = 0;
+        for (const wallet of wallets) {
+            let modified = false;
+            wallet.transactions.forEach((t, i) => {
+                if (t && (t.referenceId === null || t.referenceId === undefined)) {
+                    t.referenceId = `migrated_${wallet._id}_${Date.now()}_${i}`;
+                    modified = true;
+                }
+            });
+            if (modified) {
+                await wallet.save();
+                updatedCount++;
+                console.log('fixNullTransactionReferenceIds: Updated wallet', wallet._id.toString());
+            }
+        }
+
+        return updatedCount;
+    } catch (err) {
+        console.error('fixNullTransactionReferenceIds: failed', err);
+        throw err;
+    }
+};
+
+// Prevent saving transactions with null/undefined referenceId values
+walletSchema.pre('save', function(next) {
+    if (this.transactions && Array.isArray(this.transactions)) {
+        const bad = this.transactions.some(t => t.referenceId === null || t.referenceId === undefined);
+        if (bad) {
+            return next(new Error('transactions.referenceId cannot be null or undefined'));
+        }
+    }
+    next();
+});
 
 const Wallet = mongoose.model('Wallet', walletSchema);
 

@@ -94,20 +94,27 @@ async function enforceRateLimit(userId) {
   }
 }
 
+// Helper: find wallets with null/undefined transaction referenceIds, assign unique IDs, and drop old index if present
+// This helper now delegates to the Wallet model static so the same logic can be reused
+async function fixNullTransactionReferenceIds() {
+  return Wallet.fixNullTransactionReferenceIds();
+}
+
 // Register new user
 router.post('/register', async (req, res) => {
   try {
-    // Check if user already exists
-    const existingUser = await User.findOne({ email: req.body.email });
-    if (existingUser) {
-      return res.status(400).json({ error: 'Email already registered' });
-    }
-
     // Validate required fields
     const { firstName, lastName, middleName, email, password, phoneNumber, role, licenseNumber, address } = req.body;
     
     if (!firstName || !lastName || !email || !password || !phoneNumber || !role) {
       return res.status(400).json({ error: 'firstName, lastName, email, password, phoneNumber, and role are required' });
+    }
+
+    const normalizedEmail = email && email.toLowerCase();
+    // Check if user already exists
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(409).json({ error: 'Email already registered' });
     }
 
     // Validate role-specific requirements
@@ -125,7 +132,7 @@ router.post('/register', async (req, res) => {
       firstName,
       lastName,
       middleName: middleName || '',
-      email,
+      email: normalizedEmail,
       password,
       phoneNumber,
       role,
@@ -148,14 +155,48 @@ router.post('/register', async (req, res) => {
     }
 
     // If the user is a commuter, create a wallet with a balance of 500
+    let createdWalletReferenceId = null;
     if (role === 'commuter') {
+      const walletRef = `wallet_${user._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
       const wallet = new Wallet({
         user: user._id,
+        referenceId: walletRef,
         balance: 500,
         currency: 'PHP',
         transactions: []
       });
-      await wallet.save();
+      try {
+        await wallet.save();
+        createdWalletReferenceId = walletRef;
+      } catch (err) {
+        // E11000 duplicate key error caused by existing null transactions.referenceId collisions
+        if (err && err.code === 11000 && /transactions\.referenceId/.test(err.message)) {
+          console.warn('Duplicate key on wallet creation due to null transactions.referenceId. Attempting automatic cleanup and retry.');
+          try {
+            await Wallet.fixNullTransactionReferenceIds();
+          } catch (e) {
+            console.warn('Automatic cleanup failed:', e.message);
+          }
+
+          // Best-effort: drop the old plain index if it still exists
+          try {
+            const indexes = await Wallet.collection.indexes();
+            const idx = indexes.find(i => i.key && i.key['transactions.referenceId'] === 1);
+            if (idx) {
+              console.log('Dropping existing index:', idx.name);
+              await Wallet.collection.dropIndex(idx.name);
+            }
+          } catch (dropErr) {
+            console.warn('Could not drop old index (may not exist or insufficient permissions):', dropErr.message);
+          }
+
+          // Retry save
+          await wallet.save();
+          createdWalletReferenceId = walletRef;
+        } else {
+          throw err;
+        }
+      }
     }
 
     // Generate email verification token
@@ -189,6 +230,7 @@ router.post('/register', async (req, res) => {
     res.status(201).json({
       user: user.toJSON(),
       token,
+      walletReferenceId: createdWalletReferenceId,
       message: 'Registration successful. Please check your email to verify your account.'
     });
   } catch (error) {
@@ -196,6 +238,28 @@ router.post('/register', async (req, res) => {
       const messages = Object.values(error.errors).map(err => err.message);
       return res.status(400).json({ error: messages.join(', ') });
     }
+
+    // Handle MongoDB duplicate key errors more explicitly
+    if (error && error.code === 11000) {
+      // Prefer structured keyValue when available
+      const dupKey = (error.keyValue && Object.keys(error.keyValue)[0]) || null;
+
+      // Email duplicate
+      if (dupKey === 'email' || /email/i.test(error.message)) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+
+      // Old wallet transactions.referenceId index causing E11000
+      if (/transactions\.referenceId/.test(error.message)) {
+        const msg = 'Signup failed due to an existing database index on wallet transactions (duplicate null referenceId). Please run scripts/migrations/fix_wallet_reference_nulls.js or ask your DB admin to drop the old index.';
+        console.error('Registration failed due to leftover index:', error);
+        return res.status(500).json({ error: msg });
+      }
+
+      // Generic duplicate-key fallback
+      return res.status(409).json({ error: `Duplicate key error: ${JSON.stringify(error.keyValue || error.message)}` });
+    }
+
     res.status(400).json({ error: error.message });
   }
 });

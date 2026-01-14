@@ -61,6 +61,22 @@ const connectMongoDB = () => {
 
 connectMongoDB();
 
+// Run a safe startup migration to fix wallets with null transaction referenceIds
+// and ensure the proper partial unique index is present. This will attempt the
+// migration once the MongoDB connection is open and will not crash the server.
+mongoose.connection.on('connected', async () => {
+  try {
+    console.log('MongoDB connection open — running wallet migration & index sync');
+    const Wallet = require('./models/Wallet');
+    const updated = await Wallet.fixNullTransactionReferenceIds();
+    console.log(`Startup: fixNullTransactionReferenceIds updated ${updated} wallet(s)`);
+    const syncRes = await Wallet.syncIndexes();
+    console.log('Startup: Wallet.syncIndexes result:', syncRes);
+  } catch (err) {
+    console.warn('Startup wallet migration/index sync failed:', err.message);
+  }
+});
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');

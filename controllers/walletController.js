@@ -1,6 +1,7 @@
 const Wallet = require('../models/Wallet');
 const User = require('../models/User');
 const xenditService = require('../services/xendit');
+const crypto = require('crypto');
 const { validationResult } = require('express-validator');
 
 // Get wallet balance
@@ -24,13 +25,48 @@ const getWallet = async (req, res) => {
       userId: wallet.user,
       amount: wallet.balance || 0,
       balance: wallet.balance || 0,
-      currency: wallet.currency || 'PHP'
+      currency: wallet.currency || 'PHP',
+      referenceId: wallet.referenceId || null
     });
   } catch (error) {
     console.error('Error getting wallet:', error);
     res.status(500).json({ error: 'Failed to get wallet' });
   }
 };
+
+// Helper: save a wallet and attempt automated repair if a transactions.referenceId unique-index collision occurs
+async function saveWalletWithRepair(wallet) {
+  try {
+    await wallet.save();
+    return;
+  } catch (err) {
+    if (err && err.code === 11000 && /transactions\.referenceId/.test(err.message)) {
+      console.warn('saveWalletWithRepair: detected duplicate key on transactions.referenceId — attempting repair');
+      try {
+        // Try model-level repair first
+        await Wallet.fixNullTransactionReferenceIds();
+      } catch (e) {
+        console.warn('saveWalletWithRepair: model repair failed:', e.message);
+      }
+      // Try dropping any leftover plain index explicitly (best-effort)
+      try {
+        const indexes = await Wallet.collection.indexes();
+        const idx = indexes.find(i => i.key && i.key['transactions.referenceId'] === 1);
+        if (idx) {
+          console.log('saveWalletWithRepair: dropping index', idx.name);
+          await Wallet.collection.dropIndex(idx.name);
+        }
+      } catch (dropErr) {
+        console.warn('saveWalletWithRepair: could not drop index directly:', dropErr.message);
+      }
+
+      // Retry save once
+      await wallet.save();
+      return;
+    }
+    throw err;
+  }
+}
 
 // Initialize wallet for user
 const initializeWallet = async (req, res) => {
@@ -48,19 +84,22 @@ const initializeWallet = async (req, res) => {
     }
 
     // Create new wallet
+    const referenceId = `wallet_${req.user._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
     wallet = new Wallet({
       user: req.user._id,
+      referenceId,
       balance: 0,
       currency: 'PHP',
       transactions: []
     });
 
-    await wallet.save();
+    await saveWalletWithRepair(wallet);
     res.json({
       _id: wallet._id,
       id: wallet._id,
       amount: 0,
-      balance: 0
+      balance: 0,
+      referenceId: wallet.referenceId || null
     });
   } catch (error) {
     console.error('Error initializing wallet:', error);
@@ -81,13 +120,15 @@ const initiateTopUp = async (req, res) => {
     // Get or create wallet
     let wallet = await Wallet.findByUserId(req.user._id);
     if (!wallet) {
+      const referenceId = `wallet_${req.user._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
       wallet = new Wallet({
         user: req.user._id,
+        referenceId,
         balance: 0,
         currency: 'PHP',
         transactions: []
       });
-      await wallet.save();
+      await saveWalletWithRepair(wallet);
     }
 
     // Get user details
