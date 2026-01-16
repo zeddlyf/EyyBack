@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 
+/* -------------------- HELPERS -------------------- */
+function generateTxnRef(prefix = 'txn') {
+    return `${prefix}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+}
+
+/* -------------------- TRANSACTION SCHEMA -------------------- */
 const transactionSchema = new mongoose.Schema({
     type: {
         type: String,
@@ -9,8 +15,7 @@ const transactionSchema = new mongoose.Schema({
     },
     amount: {
         type: Number,
-        required: true,
-        min: 0
+        required: true
     },
     status: {
         type: String,
@@ -27,6 +32,7 @@ const transactionSchema = new mongoose.Schema({
     metadata: mongoose.Schema.Types.Mixed
 }, { timestamps: true });
 
+/* -------------------- WALLET SCHEMA -------------------- */
 const walletSchema = new mongoose.Schema({
     user: {
         type: mongoose.Schema.Types.ObjectId,
@@ -37,6 +43,7 @@ const walletSchema = new mongoose.Schema({
     referenceId: {
         type: String,
         required: true,
+        unique: true,
         default: () => `wallet_${crypto.randomBytes(12).toString('hex')}`
     },
     balance: {
@@ -54,180 +61,249 @@ const walletSchema = new mongoose.Schema({
         default: true
     },
     transactions: [transactionSchema]
-}, {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
-});
+}, { timestamps: true });
 
-// Ensure wallet.referenceId includes user ID when possible to guarantee per-user uniqueness
-walletSchema.pre('validate', function(next) {
-    try {
-        if (!this.referenceId) {
-            if (this.user) {
-                this.referenceId = `wallet_${this.user}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-            } else {
-                this.referenceId = `wallet_${Date.now()}_${crypto.randomBytes(12).toString('hex')}`;
-            }
-        }
-        next();
-    } catch (err) {
-        next(err);
-    }
-});
-// Add index for faster lookups
+/* -------------------- INDEXES -------------------- */
 walletSchema.index({ user: 1 });
-// Add unique index for wallet referenceId (partial so existing docs without referenceId are ignored)
-walletSchema.index({ referenceId: 1 }, { unique: true, partialFilterExpression: { referenceId: { $exists: true, $ne: null } } });
-// Only enforce uniqueness for transactions that actually have a referenceId.
-// Use a partial index so documents without transactions, or with null/undefined
-// referenceId values won't be included in the unique constraint.
-// Note: $exists:true matches null values, so include $ne:null to exclude them.
+// Create a partial unique index on transactions.referenceId to avoid collisions
+// but only for non-null values
 walletSchema.index(
-  { 'transactions.referenceId': 1 },
-  { unique: true, partialFilterExpression: { 'transactions.referenceId': { $exists: true, $ne: null } } }
+    { 'transactions.referenceId': 1 },
+    { unique: true, sparse: true }
 );
 
-// Method to add funds to wallet
-walletSchema.methods.addFunds = async function(amount, transactionData) {
-    if (amount <= 0) {
-        throw new Error('Amount must be positive');
-    }
-    
-    const transaction = {
-        type: 'TOPUP',
-        amount,
-        status: 'COMPLETED',
-        referenceId: transactionData.referenceId,
-        xenditId: transactionData.xenditId,
-        paymentMethod: transactionData.paymentMethod,
-        description: transactionData.description,
-        metadata: transactionData.metadata
-    };
+/* -------------------- METHODS -------------------- */
 
-    this.balance += amount;
-    this.transactions.push(transaction);
-    
-    await this.save();
-    return this;
-};
-
-// Method to deduct funds from wallet
-walletSchema.methods.deductFunds = async function(amount, transactionData) {
-    if (amount <= 0) {
-        throw new Error('Amount must be positive');
-    }
-    
-    if (this.balance < amount) {
-        throw new Error('Insufficient balance');
-    }
-
-    const transaction = {
-        type: transactionData.type || 'PAYMENT',
-        amount: -amount, // Store as negative for deductions
-        status: 'COMPLETED',
-        referenceId: transactionData.referenceId,
-        description: transactionData.description,
-        metadata: transactionData.metadata
-    };
-
-    this.balance -= amount;
-    this.transactions.push(transaction);
-    
-    await this.save();
-    return this;
-};
-
-// Method to request cash out
-walletSchema.methods.requestCashOut = async function(amount, transactionData) {
-    if (amount <= 0) {
-        throw new Error('Amount must be positive');
-    }
-    
-    if (this.balance < amount) {
-        throw new Error('Insufficient balance');
-    }
-
-    const transaction = {
-        type: 'CASHOUT',
-        amount: -amount,
-        status: 'PENDING', // Will be updated when Xendit processes the payout
-        referenceId: transactionData.referenceId,
-        description: transactionData.description,
-        metadata: transactionData.metadata
-    };
-
-    this.balance -= amount;
-    this.transactions.push(transaction);
-    
-    await this.save();
-    return this;
-};
-
-// Static method to get wallet by user ID
-walletSchema.statics.findByUserId = function(userId) {
-    return this.findOne({ user: userId });
-};
-
-// Static helper to fix wallets containing transactions with null/undefined referenceIds
-// Drops any old index on transactions.referenceId, assigns generated IDs to null transactions,
-// and saves updated wallets. Returns the number of wallets updated.
-walletSchema.statics.fixNullTransactionReferenceIds = async function() {
-    const Model = this;
+/**
+ * SAVE WITH REPAIR (handles duplicate key errors with retry logic)
+ */
+walletSchema.methods.saveWithRepair = async function (retryCount = 0, maxRetries = 3) {
     try {
-        // Attempt to drop any existing (bad) index on transactions.referenceId
-        try {
-            const indexes = await Model.collection.indexes();
-            const idx = indexes.find(i => i.key && i.key['transactions.referenceId'] === 1);
-            if (idx) {
-                console.log('fixNullTransactionReferenceIds: Dropping index', idx.name);
-                await Model.collection.dropIndex(idx.name);
-            } else {
-                console.log('fixNullTransactionReferenceIds: No transactions.referenceId index found');
-            }
-        } catch (dropErr) {
-            console.warn('fixNullTransactionReferenceIds: Could not drop index (may not exist or insufficient permissions):', dropErr.message);
-        }
-
-        // Find wallets that contain null/undefined transaction referenceIds
-        const wallets = await Model.find({ 'transactions.referenceId': null });
-        console.log(`fixNullTransactionReferenceIds: Found ${wallets.length} wallet(s) with null transaction referenceId`);
-
-        let updatedCount = 0;
-        for (const wallet of wallets) {
-            let modified = false;
-            wallet.transactions.forEach((t, i) => {
-                if (t && (t.referenceId === null || t.referenceId === undefined)) {
-                    t.referenceId = `migrated_${wallet._id}_${Date.now()}_${i}`;
-                    modified = true;
-                }
-            });
-            if (modified) {
-                await wallet.save();
-                updatedCount++;
-                console.log('fixNullTransactionReferenceIds: Updated wallet', wallet._id.toString());
-            }
-        }
-
-        return updatedCount;
+        await this.save();
+        return this;
     } catch (err) {
-        console.error('fixNullTransactionReferenceIds: failed', err);
+        // Handle duplicate key errors on transactions.referenceId
+        if (err && err.code === 11000 && /transactions\.referenceId/.test(err.message)) {
+            console.warn(`saveWithRepair: Duplicate key error on transactions.referenceId (attempt ${retryCount + 1}/${maxRetries})`);
+            
+            // First retry: attempt to fix null transaction referenceIds
+            if (retryCount === 0) {
+                try {
+                    console.log('saveWithRepair: Attempting to fix null transaction referenceIds...');
+                    await this.constructor.fixNullTransactionReferenceIds();
+                } catch (fixErr) {
+                    console.warn('saveWithRepair: Fix null failed:', fixErr.message);
+                }
+            }
+            
+            // Second retry: attempt to drop problematic index
+            if (retryCount === 1) {
+                try {
+                    console.log('saveWithRepair: Attempting to drop problematic index...');
+                    const indexes = await this.constructor.collection.indexes();
+                    const idx = indexes.find(i => i.key && i.key['transactions.referenceId'] === 1);
+                    if (idx) {
+                        console.log('saveWithRepair: Dropping index:', idx.name);
+                        await this.constructor.collection.dropIndex(idx.name);
+                    }
+                } catch (dropErr) {
+                    console.warn('saveWithRepair: Could not drop index:', dropErr.message);
+                }
+            }
+            
+            // Retry with exponential backoff
+            if (retryCount < maxRetries) {
+                const delayMs = 100 * Math.pow(2, retryCount); // 100ms, 200ms, 400ms
+                console.log(`saveWithRepair: Retrying after ${delayMs}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                return this.saveWithRepair(retryCount + 1, maxRetries);
+            }
+        }
+        
+        // If not a duplicate key error or max retries exceeded, throw
         throw err;
     }
 };
 
-// Prevent saving transactions with null/undefined referenceId values
-walletSchema.pre('save', function(next) {
-    if (this.transactions && Array.isArray(this.transactions)) {
-        const bad = this.transactions.some(t => t.referenceId === null || t.referenceId === undefined);
-        if (bad) {
-            return next(new Error('transactions.referenceId cannot be null or undefined'));
+/**
+ * ADD FUNDS (ATOMIC & WITH RETRY LOGIC)
+ */
+walletSchema.methods.addFunds = async function (amount, transactionData = {}, retryCount = 0, maxRetries = 3) {
+    if (amount <= 0) throw new Error('Amount must be positive');
+
+    const refId = transactionData.referenceId || generateTxnRef('topup');
+
+    try {
+        const result = await this.constructor.findOneAndUpdate(
+        { _id: this._id },
+        {
+            $inc: { balance: amount },
+            $push: {
+                transactions: {
+                    type: transactionData.type || 'TOPUP',
+                    amount,
+                    status: 'COMPLETED',
+                    referenceId: refId,
+                    xenditId: transactionData.xenditId,
+                    paymentMethod: transactionData.paymentMethod,
+                    description: transactionData.description,
+                    metadata: transactionData.metadata
+                }
+            }
+        },
+        { new: true }
+    );
+        if (!result) throw new Error('Failed to update wallet');
+        return result;
+    } catch (err) {
+        if (err && err.code === 11000 && /transactions\\.referenceId/.test(err.message)) {
+            if (retryCount < maxRetries) {
+                const delayMs = 100 * Math.pow(2, retryCount);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                return this.addFunds(amount, transactionData, retryCount + 1, maxRetries);
+            }
         }
+        throw err;
     }
-    next();
-});
+};
 
+/**
+ * DEDUCT FUNDS (ATOMIC & SAFE)
+ */
+walletSchema.methods.deductFunds = async function (amount, transactionData = {}) {
+    if (amount <= 0) throw new Error('Amount must be positive');
+
+    const refId = transactionData.referenceId || generateTxnRef('pay');
+
+    // Check current balance first
+    const currentWallet = await this.constructor.findById(this._id);
+    if (!currentWallet) {
+        throw new Error('Wallet not found');
+    }
+    
+    if (currentWallet.balance < amount) {
+        throw new Error(`Insufficient wallet balance. Required: ₱${amount.toFixed(2)}, Available: ₱${currentWallet.balance.toFixed(2)}`);
+    }
+
+    const updatedWallet = await this.constructor.findOneAndUpdate(
+        {
+            _id: this._id,
+            balance: { $gte: amount }
+        },
+        {
+            $inc: { balance: -amount },
+            $push: {
+                transactions: {
+                    type: transactionData.type || 'PAYMENT',
+                    amount,
+                    status: 'COMPLETED',
+                    referenceId: refId,
+                    description: transactionData.description,
+                    metadata: transactionData.metadata
+                }
+            }
+        },
+        { new: true }
+    );
+
+    if (!updatedWallet) {
+        throw new Error(`Insufficient wallet balance. Required: ₱${amount.toFixed(2)}, Available: ₱${currentWallet.balance.toFixed(2)}`);
+    }
+
+    return updatedWallet;
+};
+
+/**
+ * CASHOUT REQUEST
+ */
+walletSchema.methods.requestCashOut = async function (amount, transactionData = {}) {
+    if (amount <= 0) throw new Error('Amount must be positive');
+
+    const refId = transactionData.referenceId || generateTxnRef('cashout');
+
+    const updatedWallet = await this.constructor.findOneAndUpdate(
+        {
+            _id: this._id,
+            balance: { $gte: amount }
+        },
+        {
+            $inc: { balance: -amount },
+            $push: {
+                transactions: {
+                    type: 'CASHOUT',
+                    amount,
+                    status: 'PENDING',
+                    referenceId: refId,
+                    description: transactionData.description,
+                    metadata: transactionData.metadata
+                }
+            }
+        },
+        { new: true }
+    );
+
+    if (!updatedWallet) {
+        throw new Error('Insufficient balance');
+    }
+
+    return updatedWallet;
+};
+
+/* -------------------- STATICS -------------------- */
+walletSchema.statics.findByUserId = function (userId) {
+    return this.findOne({ user: userId });
+};
+
+/**
+ * FIX NULL TRANSACTION REFERENCE IDS
+ */
+walletSchema.statics.fixNullTransactionReferenceIds = async function () {
+    const result = await this.updateMany(
+        { 'transactions.referenceId': null },
+        [
+            {
+                $set: {
+                    transactions: {
+                        $map: {
+                            input: '$transactions',
+                            as: 'txn',
+                            in: {
+                                $cond: [
+                                    { $eq: ['$$txn.referenceId', null] },
+                                    {
+                                        ...Object.fromEntries(
+                                            Object.entries({
+                                                type: '$$txn.type',
+                                                amount: '$$txn.amount',
+                                                status: '$$txn.status',
+                                                referenceId: `${generateTxnRef('fixed')}_$$txn._id`,
+                                                xenditId: '$$txn.xenditId',
+                                                paymentMethod: '$$txn.paymentMethod',
+                                                description: '$$txn.description',
+                                                metadata: '$$txn.metadata',
+                                                createdAt: '$$txn.createdAt',
+                                                updatedAt: '$$txn.updatedAt'
+                                            }).map(([key, value]) => [key, { $literal: value }])
+                                        ),
+                                        referenceId: {
+                                            $concat: [
+                                                'fixed_',
+                                                { $toString: '$$txn._id' }
+                                            ]
+                                        }
+                                    },
+                                    '$$txn'
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    );
+    return result;
+};
+
+/* -------------------- MODEL -------------------- */
 const Wallet = mongoose.model('Wallet', walletSchema);
-
 module.exports = Wallet;
-

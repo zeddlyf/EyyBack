@@ -129,7 +129,8 @@ router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
       return res.status(403).json({ error: 'Only drivers can accept rides' });
     }
 
-    const ride = await Ride.findById(req.params.id);
+    const ride = await Ride.findById(req.params.id)
+      .populate('passenger', '_id');
     
     if (!ride) {
       return res.status(404).json({ error: 'Ride not found' });
@@ -137,6 +138,25 @@ router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
 
     if (ride.status !== 'pending') {
       return res.status(400).json({ error: 'Ride is no longer available' });
+    }
+
+    // If ride payment is via wallet, validate passenger has sufficient balance
+    if (ride.paymentMethod === 'wallet') {
+      try {
+        const Wallet = require('../models/Wallet');
+        const passengerWallet = await Wallet.findByUserId(ride.passenger._id);
+        
+        if (!passengerWallet) {
+          return res.status(400).json({ error: 'Passenger wallet not found' });
+        }
+
+        if (passengerWallet.balance < ride.fare) {
+          return res.status(400).json({ error: 'Passenger has insufficient wallet balance for this ride' });
+        }
+      } catch (walletError) {
+        console.error('Error validating passenger wallet:', walletError);
+        return res.status(400).json({ error: 'Failed to validate passenger wallet' });
+      }
     }
 
     ride.driver = req.user._id;
@@ -198,7 +218,9 @@ router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
 // Complete ride
   router.post('/:id/complete', auth, async (req, res) => {
   try {
-    const ride = await Ride.findById(req.params.id);
+    const ride = await Ride.findById(req.params.id)
+      .populate('passenger', '_id')
+      .populate('driver', '_id');
     
     if (!ride) {
       return res.status(404).json({ error: 'Ride not found' });
@@ -210,6 +232,72 @@ router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
 
     if (ride.status !== 'accepted') {
       return res.status(400).json({ error: 'Can only complete accepted rides' });
+    }
+
+    // Process payment if using wallet
+    if (ride.paymentMethod === 'wallet' && ride.paymentStatus === 'pending') {
+      try {
+        const Wallet = require('../models/Wallet');
+        const crypto = require('crypto');
+        
+        console.log(`💰 Processing payment for ride ${ride._id}`);
+        
+        // Get passenger's wallet
+        let passengerWallet = await Wallet.findByUserId(ride.passenger._id);
+        if (!passengerWallet) {
+          console.warn('Passenger wallet not found');
+          ride.paymentStatus = 'pending';
+        } else if (passengerWallet.balance < ride.fare) {
+          console.warn(`Insufficient balance`);
+          ride.paymentStatus = 'pending';
+        } else {
+          const referenceId = `ride_${ride._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+          await passengerWallet.deductFunds(ride.fare, {
+            type: 'PAYMENT',
+            referenceId: referenceId,
+            description: `Payment for ride from ${ride.pickupLocation.address} to ${ride.dropoffLocation.address}`,
+            metadata: {
+              rideId: ride._id.toString(),
+              driverId: ride.driver._id.toString(),
+              distance: ride.distance,
+              duration: ride.duration
+            }
+          });
+
+          // Add funds to driver's wallet
+          let driverWallet = await Wallet.findByUserId(ride.driver._id);
+          if (!driverWallet) {
+            driverWallet = new Wallet({
+              user: ride.driver._id,
+              balance: 0,
+              currency: 'PHP',
+              transactions: []
+            });
+            await driverWallet.saveWithRepair();
+          }
+
+          const driverReferenceId = `ride_income_${ride._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+          await driverWallet.addFunds(ride.fare, {
+            type: 'TOPUP',
+            referenceId: driverReferenceId,
+            xenditId: null,
+            paymentMethod: 'RIDE_PAYMENT',
+            description: `Income from ride to ${ride.dropoffLocation.address}`,
+            metadata: {
+              rideId: ride._id.toString(),
+              passengerId: ride.passenger._id.toString(),
+              distance: ride.distance,
+              duration: ride.duration
+            }
+          });
+
+          console.log(`✅ Payment processed`);
+          ride.paymentStatus = 'completed';
+        }
+      } catch (walletError) {
+        console.error('❌ Wallet error:', walletError.message);
+        console.warn('Continuing with ride completion');
+      }
     }
 
     ride.status = 'completed';

@@ -1,3 +1,4 @@
+
 function clampHalfStars(value) {
   let v = Math.max(1, Math.min(5, Number(value)));
   return Math.round(v * 2) / 2;
