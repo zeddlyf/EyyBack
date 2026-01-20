@@ -44,6 +44,11 @@ router.get('/transactions', auth, [
 // Verify and update pending transaction (manual check)
 router.post('/verify-transaction', auth, walletController.verifyTransaction);
 
+// 🔍 DEVELOPMENT ONLY: Debug endpoint to check earnings calculation
+if (process.env.NODE_ENV !== 'production') {
+  router.get('/debug/earnings', auth, walletController.debugDriverEarnings);
+}
+
 // ⚠️ DEVELOPMENT ONLY: Test endpoint to simulate cashout callback
 if (process.env.NODE_ENV !== 'production') {
   router.post('/test/simulate-cashout-callback', [

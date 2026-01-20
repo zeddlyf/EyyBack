@@ -405,8 +405,14 @@ const initiateCashOut = async (req, res) => {
 
     // Calculate available balance: use maximum of wallet balance or earnings from completed rides
     // This matches frontend behavior (Math.max(walletBalance, totalEarnings))
+    let totalEarnings = 0;
+    let availableBalance = 0;
+    
     try {
       const Ride = require('../models/Ride');
+      
+      // Get only completed rides where payment has been processed to wallet
+      // Exclude rides with pending or failed payments
       const completedRides = await Ride.find({
         driver: req.user._id,
         status: 'completed',
@@ -414,10 +420,10 @@ const initiateCashOut = async (req, res) => {
         paymentMethod: 'wallet'
       }).select('fare');
       
-      const totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
+      totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
       console.log(`📊 Earnings calculation: completedRides=${completedRides.length}, totalEarnings=${totalEarnings}`);
       
-      const availableBalance = Math.max(wallet.balance, totalEarnings);
+      availableBalance = Math.max(wallet.balance, totalEarnings);
       console.log(`💰 Available balance: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
 
       // Check if user has sufficient balance
@@ -433,14 +439,14 @@ const initiateCashOut = async (req, res) => {
         });
       }
 
-      // If wallet balance is less than available, sync earnings first
+      // If wallet balance is less than total earnings, sync earnings first
       if (totalEarnings > wallet.balance) {
         const amountToSync = totalEarnings - wallet.balance;
         console.log(`🔄 Syncing ₱${amountToSync.toFixed(2)} from earnings to wallet...`);
         
         wallet = await wallet.addFunds(amountToSync, {
           type: 'TOPUP',
-          referenceId: `sync_${req.user._id}_${Date.now()}`,
+          referenceId: `sync_earnings_${req.user._id}_${Date.now()}`,
           xenditId: null,
           paymentMethod: 'EARNINGS_SYNC',
           description: `Auto-sync of completed ride earnings`,
@@ -470,28 +476,6 @@ const initiateCashOut = async (req, res) => {
 
     console.log(`💸 Initiating cash-out: Amount=${amount}, User=${req.user._id}`);
     console.log(`📊 Balance info: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
-
-    // If wallet balance is less than available (i.e., totalEarnings > wallet.balance),
-    // we need to sync the earnings into the wallet first
-    if (totalEarnings > wallet.balance) {
-      const earningsToSync = totalEarnings - wallet.balance;
-      console.log(`💰 Syncing earnings to wallet: ${earningsToSync}`);
-      
-      wallet = await wallet.addFunds(earningsToSync, {
-        type: 'TOPUP',
-        referenceId: `sync_earnings_${req.user._id}_${Date.now()}`,
-        xenditId: null,
-        paymentMethod: 'EARNINGS_SYNC',
-        description: `Syncing completed ride earnings to wallet`,
-        metadata: {
-          userId: req.user._id.toString(),
-          type: 'EARNINGS_SYNC',
-          syncedAmount: earningsToSync
-        }
-      });
-      
-      console.log(`✅ Earnings synced. New balance: ${wallet.balance}`);
-    }
 
     // Create payout request via Xendit
     const payout = await xenditService.createPayout({
@@ -925,6 +909,64 @@ const testSimulateTopupCallback = async (req, res) => {
   }
 };
 
+// Debug endpoint to check driver earnings
+const debugDriverEarnings = async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Debug endpoints disabled in production' });
+  }
+
+  try {
+    const Ride = require('../models/Ride');
+    const userId = req.user._id;
+
+    // Get wallet
+    const wallet = await Wallet.findByUserId(userId);
+    console.log(`🔍 DEBUG: Wallet for user ${userId}:`, {
+      balance: wallet?.balance,
+      transactions: wallet?.transactions.length || 0
+    });
+
+    // Get all rides
+    const allRides = await Ride.find({ driver: userId });
+    console.log(`🔍 DEBUG: All rides for driver:`, allRides.length);
+
+    // Get completed rides with successful wallet payments
+    const completedRides = await Ride.find({
+      driver: userId,
+      status: 'completed',
+      paymentStatus: 'completed',
+      paymentMethod: 'wallet'
+    }).select('fare status paymentStatus paymentMethod');
+    
+    const totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
+
+    res.json({
+      debug: true,
+      userId: userId.toString(),
+      wallet: {
+        balance: wallet?.balance || 0,
+        referenceId: wallet?.referenceId,
+        transactionCount: wallet?.transactions.length || 0
+      },
+      rides: {
+        total: allRides.length,
+        completed: completedRides.length,
+        totalEarnings: totalEarnings,
+        completedRidesDetail: completedRides.map(r => ({
+          fare: r.fare,
+          status: r.status,
+          paymentStatus: r.paymentStatus,
+          paymentMethod: r.paymentMethod
+        }))
+      },
+      availableBalance: Math.max(wallet?.balance || 0, totalEarnings)
+    });
+  } catch (error) {
+    console.error('❌ Debug error:', error);
+    res.status(500).json({ error: 'Debug failed', message: error.message });
+  }
+};
+
 module.exports = {
   getWallet,
   initializeWallet,
@@ -936,4 +978,5 @@ module.exports = {
   verifyTransaction,
   testSimulateCashoutCallback,
   testSimulateTopupCallback,
+  debugDriverEarnings,
 };
