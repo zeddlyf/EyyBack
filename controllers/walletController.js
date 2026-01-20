@@ -401,28 +401,71 @@ const initiateCashOut = async (req, res) => {
       await wallet.saveWithRepair();
     }
 
+    console.log(`💸 Cash-out request: Amount=${amount}, Current wallet balance=${wallet.balance}`);
+
     // Calculate available balance: use maximum of wallet balance or earnings from completed rides
     // This matches frontend behavior (Math.max(walletBalance, totalEarnings))
-    const Ride = require('../models/Ride');
-    const completedRides = await Ride.find({
-      driver: req.user._id,
-      status: 'completed',
-      paymentStatus: 'completed',
-      paymentMethod: 'wallet'
-    });
-    
-    const totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
-    const availableBalance = Math.max(wallet.balance, totalEarnings);
+    try {
+      const Ride = require('../models/Ride');
+      const completedRides = await Ride.find({
+        driver: req.user._id,
+        status: 'completed',
+        paymentStatus: 'completed',
+        paymentMethod: 'wallet'
+      }).select('fare');
+      
+      const totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
+      console.log(`📊 Earnings calculation: completedRides=${completedRides.length}, totalEarnings=${totalEarnings}`);
+      
+      const availableBalance = Math.max(wallet.balance, totalEarnings);
+      console.log(`💰 Available balance: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
 
-    // Check if user has sufficient balance
-    if (availableBalance < amount) {
-      return res.status(400).json({ 
-        error: 'Insufficient balance',
-        available: availableBalance,
-        walletBalance: wallet.balance,
-        totalEarnings: totalEarnings,
-        requested: amount
-      });
+      // Check if user has sufficient balance
+      if (availableBalance < amount) {
+        console.warn(`⚠️  Insufficient balance: available=${availableBalance} < requested=${amount}`);
+        return res.status(400).json({ 
+          error: 'Insufficient balance',
+          available: availableBalance,
+          walletBalance: wallet.balance,
+          totalEarnings: totalEarnings,
+          requested: amount,
+          message: `You can withdraw up to ₱${availableBalance.toFixed(2)}`
+        });
+      }
+
+      // If wallet balance is less than available, sync earnings first
+      if (totalEarnings > wallet.balance) {
+        const amountToSync = totalEarnings - wallet.balance;
+        console.log(`🔄 Syncing ₱${amountToSync.toFixed(2)} from earnings to wallet...`);
+        
+        wallet = await wallet.addFunds(amountToSync, {
+          type: 'TOPUP',
+          referenceId: `sync_${req.user._id}_${Date.now()}`,
+          xenditId: null,
+          paymentMethod: 'EARNINGS_SYNC',
+          description: `Auto-sync of completed ride earnings`,
+          metadata: {
+            userId: req.user._id.toString(),
+            type: 'EARNINGS_SYNC',
+            syncAmount: amountToSync
+          }
+        });
+        
+        console.log(`✅ Earnings synced. New wallet balance: ${wallet.balance}`);
+      }
+    } catch (earningsErr) {
+      console.error('⚠️  Error calculating earnings:', earningsErr.message);
+      // If earning calculation fails, just use wallet balance
+      console.log(`Falling back to wallet balance only: ${wallet.balance}`);
+      
+      if (wallet.balance < amount) {
+        return res.status(400).json({ 
+          error: 'Insufficient balance',
+          available: wallet.balance,
+          requested: amount,
+          message: `You can withdraw up to ₱${wallet.balance.toFixed(2)}`
+        });
+      }
     }
 
     console.log(`💸 Initiating cash-out: Amount=${amount}, User=${req.user._id}`);
