@@ -44,4 +44,17 @@ router.get('/transactions', auth, [
 // Verify and update pending transaction (manual check)
 router.post('/verify-transaction', auth, walletController.verifyTransaction);
 
+// ⚠️ DEVELOPMENT ONLY: Test endpoint to simulate cashout callback
+if (process.env.NODE_ENV !== 'production') {
+  router.post('/test/simulate-cashout-callback', [
+    body('referenceId').isString().withMessage('Reference ID is required'),
+    body('status').optional().isIn(['COMPLETED', 'FAILED']).withMessage('Status must be COMPLETED or FAILED')
+  ], walletController.testSimulateCashoutCallback);
+
+  router.post('/test/simulate-topup-callback', [
+    body('referenceId').isString().withMessage('Reference ID is required'),
+    body('status').optional().isIn(['PAID', 'FAILED']).withMessage('Status must be PAID or FAILED')
+  ], walletController.testSimulateTopupCallback);
+}
+
 module.exports = router;

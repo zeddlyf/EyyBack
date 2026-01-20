@@ -374,97 +374,216 @@ const initiateCashOut = async (req, res) => {
     
     // Validate amount
     if (!amount || isNaN(amount) || amount < 1) {
-      return res.status(400).json({ error: 'Invalid amount' });
+      return res.status(400).json({ error: 'Invalid amount. Minimum is ₱1.00' });
+    }
+
+    if (amount < 100) {
+      return res.status(400).json({ error: 'Minimum cash-out amount is ₱100.00' });
+    }
+
+    // Validate bank details
+    if (!bankCode || !accountNumber || !accountHolderName) {
+      return res.status(400).json({ error: 'Bank details are required (bankCode, accountNumber, accountHolderName)' });
     }
 
     // Get user's wallet
-    const wallet = await Wallet.findByUserId(req.user._id);
+    let wallet = await Wallet.findByUserId(req.user._id);
     if (!wallet) {
-      return res.status(404).json({ error: 'Wallet not found' });
+      // Create wallet if it doesn't exist
+      const referenceId = `wallet_${req.user._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+      wallet = new Wallet({
+        user: req.user._id,
+        referenceId,
+        balance: 0,
+        currency: 'PHP',
+        transactions: []
+      });
+      await wallet.saveWithRepair();
     }
 
     // Check if user has sufficient balance
     if (wallet.balance < amount) {
-      return res.status(400).json({ error: 'Insufficient balance' });
+      return res.status(400).json({ 
+        error: 'Insufficient balance',
+        available: wallet.balance,
+        requested: amount
+      });
     }
 
-    // Create payout request
+    console.log(`💸 Initiating cash-out: Amount=${amount}, User=${req.user._id}`);
+
+    // Create payout request via Xendit
     const payout = await xenditService.createPayout({
       amount,
       bankCode,
       accountNumber,
       accountHolderName,
-      description: 'Cash out from wallet',
+      description: `Cash out to ${accountHolderName} (${bankCode})`,
       metadata: {
-        userId: req.user._id,
+        userId: req.user._id.toString(),
         type: 'WALLET_CASHOUT',
+        bankCode,
+        accountNumber: accountNumber.slice(-4) // Only store last 4 digits for security
       },
     });
 
-    // Deduct amount from wallet
-    await wallet.requestCashOut(amount, {
-      referenceId: payout.referenceId,
-      description: `Cash out to ${bankCode} ${accountNumber}`,
+    console.log(`Payout created: ID=${payout.id}, RefID=${payout.reference_id}`);
+
+    // Deduct amount from wallet (marks as PENDING)
+    const updatedWallet = await wallet.requestCashOut(amount, {
+      referenceId: payout.reference_id || payout.referenceId,
+      xenditId: payout.id,
+      description: `Cash out to ${bankCode} ${accountNumber.slice(-4)}`,
       metadata: {
         payoutId: payout.id,
         bankCode,
-        accountNumber: accountNumber.slice(-4), // Only store last 4 digits
+        accountNumber: accountNumber.slice(-4),
+        accountHolderName,
+        initiatedAt: new Date()
       },
     });
+
+    console.log(`✅ Cash-out initiated. Amount deducted. New balance: ${updatedWallet.balance}`);
 
     res.json({
       success: true,
       payoutId: payout.id,
-      referenceId: payout.referenceId,
+      referenceId: payout.reference_id || payout.referenceId,
       status: 'pending',
+      amount,
+      message: 'Cash-out request submitted successfully. It will be processed within 1-3 business days.'
     });
   } catch (error) {
-    console.error('Error initiating cash-out:', error);
-    res.status(500).json({ error: 'Failed to initiate cash-out' });
+    console.error('❌ Error initiating cash-out:', error);
+    res.status(500).json({ error: 'Failed to initiate cash-out', message: error.message });
   }
 };
 
 // Handle cash-out callback from Xendit
 const handleCashOutCallback = async (req, res) => {
   try {
-    // Verify webhook signature
-    const signature = req.headers['x-callback-token'];
-    const isValid = xenditService.verifyWebhookSignature(
-      signature,
-      req.body,
-      process.env.XENDIT_CALLBACK_TOKEN
-    );
-
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid signature' });
+    // Verify webhook token - allow development mode to skip verification
+    const webhookToken = req.headers['x-callback-token'];
+    const expectedToken = process.env.XENDIT_CALLBACK_TOKEN || process.env.XENDIT_WEBHOOK_TOKEN;
+    
+    // In development mode with simulated webhooks, allow without token or with 'test_token'
+    const isDevelopmentSimulation = process.env.NODE_ENV !== 'production' && 
+      (process.env.SIMULATE_WEBHOOKS === 'true' || webhookToken === 'test_token');
+    
+    if (expectedToken && webhookToken !== expectedToken && !isDevelopmentSimulation) {
+      console.error('Invalid webhook token for cash-out callback');
+      // In development, log but don't block
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(401).json({ error: 'Unauthorized' });
+      } else {
+        console.warn('⚠️  Webhook token mismatch in development mode - proceeding anyway');
+      }
     }
 
-    // Process the payout callback
-    const callbackData = await xenditService.handlePayoutCallback(req.body);
-    
+    const webhookData = req.body;
+    console.log('💰 Xendit payout callback received:', JSON.stringify(webhookData, null, 2));
+
+    // Extract reference ID from webhook data
+    const referenceId = webhookData.reference_id || webhookData.referenceId;
+    const status = webhookData.status || webhookData.payout_status;
+    const payoutId = webhookData.id || webhookData.payout_id;
+
+    if (!referenceId) {
+      console.error('Missing reference ID in payout webhook');
+      return res.status(400).json({ error: 'Missing reference ID' });
+    }
+
     // Find the transaction in wallet
     const wallet = await Wallet.findOne({
-      'transactions.referenceId': callbackData.referenceId,
+      'transactions.referenceId': referenceId,
     });
 
     if (!wallet) {
+      console.error('Wallet not found for payout transaction:', referenceId);
       return res.status(404).json({ error: 'Transaction not found' });
     }
 
-    // Update transaction status
+    // Find the specific transaction
     const transaction = wallet.transactions.find(
-      (t) => t.referenceId === callbackData.referenceId
+      (t) => t.referenceId === referenceId && t.type === 'CASHOUT'
     );
 
-    if (transaction) {
-      transaction.status = callbackData.status === 'COMPLETED' ? 'COMPLETED' : 'FAILED';
-      await wallet.save();
+    if (!transaction) {
+      console.error('CASHOUT transaction not found for reference:', referenceId);
+      return res.status(404).json({ error: 'CASHOUT transaction not found' });
     }
 
-    res.json({ success: true, status: 'payout_processed' });
+    console.log(`Processing cash-out callback. Current status: ${transaction.status}, New status: ${status}`);
+
+    // Only process if still pending
+    if (transaction.status === 'PENDING') {
+      if (status === 'COMPLETED' || status === 'SUCCESS') {
+        // Get transaction amount
+        const transactionAmount = transaction.amount;
+        const transactionId = transaction._id;
+
+        // Update transaction status to COMPLETED
+        const updatedWallet = await Wallet.findOneAndUpdate(
+          { 
+            _id: wallet._id,
+            'transactions._id': transactionId,
+            'transactions.status': 'PENDING',
+            'transactions.type': 'CASHOUT'
+          },
+          {
+            $set: {
+              'transactions.$.status': 'COMPLETED',
+              'transactions.$.metadata.payoutId': payoutId,
+              'transactions.$.metadata.completedAt': new Date()
+            }
+          },
+          { new: true }
+        );
+
+        if (updatedWallet) {
+          console.log(`✅ Cash-out completed: ${transactionAmount} deducted. New balance: ${updatedWallet.balance}`);
+          return res.json({ success: true, status: 'cashout_completed' });
+        } else {
+          console.error('Failed to update wallet for cash-out completion');
+          return res.status(500).json({ error: 'Failed to update wallet' });
+        }
+      } else if (status === 'FAILED' || status === 'REJECTED') {
+        // Update transaction status to FAILED
+        const transactionId = transaction._id;
+
+        const updatedWallet = await Wallet.findOneAndUpdate(
+          { 
+            _id: wallet._id,
+            'transactions._id': transactionId
+          },
+          {
+            $set: {
+              'transactions.$.status': 'FAILED',
+              'transactions.$.metadata.failureReason': webhookData.failure_reason || 'Payout failed',
+              'transactions.$.metadata.failedAt': new Date()
+            },
+            // Refund the amount back to balance since payout failed
+            $inc: {
+              balance: transaction.amount
+            }
+          },
+          { new: true }
+        );
+
+        if (updatedWallet) {
+          console.log(`⚠️  Cash-out failed: ${transaction.amount} refunded back. New balance: ${updatedWallet.balance}`);
+          return res.json({ success: true, status: 'cashout_failed_refunded' });
+        }
+      }
+    }
+
+    // Already processed or unknown status
+    console.log(`Cash-out transaction already processed or unknown status: ${transaction.status}`);
+    res.json({ success: true, status: 'already_processed' });
   } catch (error) {
-    console.error('Error processing cash-out callback:', error);
-    res.status(500).json({ error: 'Failed to process cash-out' });
+    console.error('❌ Error processing cash-out callback:', error);
+    // Still return 200 to prevent Xendit/webhook system from retrying excessively
+    res.status(200).json({ success: false, error: error.message });
   }
 };
 
@@ -604,6 +723,127 @@ const getTransactionHistory = async (req, res) => {
   }
 };
 
+// ⚠️ DEVELOPMENT ONLY: Test endpoint to simulate cashout callback
+const testSimulateCashoutCallback = async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Test endpoints disabled in production' });
+  }
+
+  try {
+    const { referenceId, status = 'COMPLETED' } = req.body;
+
+    if (!referenceId) {
+      return res.status(400).json({ error: 'Reference ID is required' });
+    }
+
+    console.log(`🧪 TEST: Simulating cashout callback for ${referenceId} with status ${status}`);
+
+    // Simulate the callback
+    const callbackData = {
+      id: `test_payout_${Date.now()}`,
+      reference_id: referenceId,
+      status,
+      amount: 0,
+      currency: 'PHP',
+      created: new Date(),
+      metadata: { test: true }
+    };
+
+    // Call the handler directly
+    const mockReq = {
+      headers: {
+        'x-callback-token': 'test_token'
+      },
+      body: callbackData
+    };
+
+    let responseData = null;
+    const mockRes = {
+      status: (code) => ({
+        json: (data) => {
+          responseData = { code, data };
+        }
+      }),
+      json: (data) => {
+        responseData = { code: 200, data };
+      }
+    };
+
+    await handleCashOutCallback(mockReq, mockRes);
+
+    res.json({
+      success: true,
+      message: `Simulated cashout callback for ${referenceId}`,
+      status,
+      callbackResponse: responseData
+    });
+  } catch (error) {
+    console.error('❌ Test cashout callback error:', error);
+    res.status(500).json({ error: 'Failed to simulate callback', message: error.message });
+  }
+};
+
+// ⚠️ DEVELOPMENT ONLY: Test endpoint to simulate topup callback
+const testSimulateTopupCallback = async (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Test endpoints disabled in production' });
+  }
+
+  try {
+    const { referenceId, status = 'PAID' } = req.body;
+
+    if (!referenceId) {
+      return res.status(400).json({ error: 'Reference ID is required' });
+    }
+
+    console.log(`🧪 TEST: Simulating topup callback for ${referenceId} with status ${status}`);
+
+    // Simulate the callback
+    const callbackData = {
+      id: `test_invoice_${Date.now()}`,
+      external_id: referenceId,
+      status,
+      amount: 0,
+      currency: 'PHP',
+      payment_method: { type: 'INVOICE' },
+      created: new Date(),
+      metadata: { test: true }
+    };
+
+    // Call the handler directly
+    const mockReq = {
+      headers: {
+        'x-callback-token': 'test_token'
+      },
+      body: callbackData
+    };
+
+    let responseData = null;
+    const mockRes = {
+      status: (code) => ({
+        json: (data) => {
+          responseData = { code, data };
+        }
+      }),
+      json: (data) => {
+        responseData = { code: 200, data };
+      }
+    };
+
+    await handleTopUpCallback(mockReq, mockRes);
+
+    res.json({
+      success: true,
+      message: `Simulated topup callback for ${referenceId}`,
+      status,
+      callbackResponse: responseData
+    });
+  } catch (error) {
+    console.error('❌ Test topup callback error:', error);
+    res.status(500).json({ error: 'Failed to simulate callback', message: error.message });
+  }
+};
+
 module.exports = {
   getWallet,
   initializeWallet,
@@ -613,4 +853,6 @@ module.exports = {
   handleCashOutCallback,
   getTransactionHistory,
   verifyTransaction,
+  testSimulateCashoutCallback,
+  testSimulateTopupCallback,
 };
