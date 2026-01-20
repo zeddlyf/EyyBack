@@ -401,16 +401,54 @@ const initiateCashOut = async (req, res) => {
       await wallet.saveWithRepair();
     }
 
+    // Calculate available balance: use maximum of wallet balance or earnings from completed rides
+    // This matches frontend behavior (Math.max(walletBalance, totalEarnings))
+    const Ride = require('../models/Ride');
+    const completedRides = await Ride.find({
+      driver: req.user._id,
+      status: 'completed',
+      paymentStatus: 'completed',
+      paymentMethod: 'wallet'
+    });
+    
+    const totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
+    const availableBalance = Math.max(wallet.balance, totalEarnings);
+
     // Check if user has sufficient balance
-    if (wallet.balance < amount) {
+    if (availableBalance < amount) {
       return res.status(400).json({ 
         error: 'Insufficient balance',
-        available: wallet.balance,
+        available: availableBalance,
+        walletBalance: wallet.balance,
+        totalEarnings: totalEarnings,
         requested: amount
       });
     }
 
     console.log(`💸 Initiating cash-out: Amount=${amount}, User=${req.user._id}`);
+    console.log(`📊 Balance info: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
+
+    // If wallet balance is less than available (i.e., totalEarnings > wallet.balance),
+    // we need to sync the earnings into the wallet first
+    if (totalEarnings > wallet.balance) {
+      const earningsToSync = totalEarnings - wallet.balance;
+      console.log(`💰 Syncing earnings to wallet: ${earningsToSync}`);
+      
+      wallet = await wallet.addFunds(earningsToSync, {
+        type: 'TOPUP',
+        referenceId: `sync_earnings_${req.user._id}_${Date.now()}`,
+        xenditId: null,
+        paymentMethod: 'EARNINGS_SYNC',
+        description: `Syncing completed ride earnings to wallet`,
+        metadata: {
+          userId: req.user._id.toString(),
+          type: 'EARNINGS_SYNC',
+          syncedAmount: earningsToSync
+        }
+      });
+      
+      console.log(`✅ Earnings synced. New balance: ${wallet.balance}`);
+    }
 
     // Create payout request via Xendit
     const payout = await xenditService.createPayout({
