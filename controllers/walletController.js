@@ -478,21 +478,26 @@ const initiateCashOut = async (req, res) => {
     console.log(`📊 Balance info: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
 
     // Create payout request via Xendit
-    const payout = await xenditService.createPayout({
-      amount,
-      bankCode,
-      accountNumber,
-      accountHolderName,
-      description: `Cash out to ${accountHolderName} (${bankCode})`,
-      metadata: {
-        userId: req.user._id.toString(),
-        type: 'WALLET_CASHOUT',
+    let payout;
+    try {
+      payout = await xenditService.createPayout({
+        amount,
         bankCode,
-        accountNumber: accountNumber.slice(-4) // Only store last 4 digits for security
-      },
-    });
-
-    console.log(`Payout created: ID=${payout.id}, RefID=${payout.reference_id}`);
+        accountNumber,
+        accountHolderName,
+        description: `Cash out to ${accountHolderName} (${bankCode})`,
+        metadata: {
+          userId: req.user._id.toString(),
+          type: 'WALLET_CASHOUT',
+          bankCode,
+          accountNumber: accountNumber.slice(-4) // Only store last 4 digits for security
+        },
+      });
+      console.log(`✅ Payout created: ID=${payout.id}, RefID=${payout.reference_id}`);
+    } catch (payoutError) {
+      console.error('❌ Failed to create payout:', payoutError.message);
+      throw new Error(`Failed to initiate cash-out: ${payoutError.message}`);
+    }
 
     // Deduct amount from wallet (marks as PENDING)
     const updatedWallet = await wallet.requestCashOut(amount, {
@@ -519,8 +524,8 @@ const initiateCashOut = async (req, res) => {
       message: 'Cash-out request submitted successfully. It will be processed within 1-3 business days.'
     });
   } catch (error) {
-    console.error('❌ Error initiating cash-out:', error);
-    res.status(500).json({ error: 'Failed to initiate cash-out', message: error.message });
+    console.error('❌ Error initiating cash-out:', error.message);
+    res.status(500).json({ error: error.message || 'Failed to initiate cash-out', details: error.message });
   }
 };
 

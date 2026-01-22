@@ -148,12 +148,19 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
   };
 
   try {
+    console.log(`💸 Creating payout with Xendit API...`, {
+      amount,
+      bankCode,
+      accountNumber: accountNumber.slice(-4) + '****'
+    });
+    
     const response = await axios.post(
       `${base}/payouts`,
       payload,
       { headers: getAuthHeaders(), timeout: 15000 }
     );
 
+    console.log(`✅ Payout created successfully:`, response.data.id);
     return {
       ...response.data,
       referenceId
@@ -161,8 +168,8 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
   } catch (error) {
     // In development mode, simulate successful payout response
     if (process.env.NODE_ENV !== 'production') {
-      console.warn('⚠️  Xendit payout request failed (or using development mode). Simulating successful response.');
-      console.log('Development mode: Returning simulated payout response');
+      console.warn(`⚠️  Xendit API call failed: ${error.message}`);
+      console.log('📋 Development mode: Returning simulated payout response');
       
       // Simulate a successful payout response similar to Xendit's actual response
       const simulatedResponse = {
@@ -171,7 +178,7 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
         user_id: metadata.userId || 'test_user',
         amount,
         merchant_id: 'merchant_' + Math.random().toString(36).substr(2, 5),
-        status: 'PENDING', // Xendit payouts start as PENDING
+        status: 'PENDING',
         currency: 'PHP',
         channel_code: bankCode,
         channel_properties: {
@@ -185,15 +192,24 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
         updated: new Date()
       };
       
+      console.log(`✅ Simulated payout created: ${simulatedResponse.id}`);
+      
       // Schedule automated callback in development (after 2 seconds)
       if (process.env.SIMULATE_WEBHOOKS === 'true') {
+        console.log(`⏱️  Scheduling simulated callback in 2 seconds...`);
         setTimeout(() => {
-          simulatePayoutCallback(referenceId, 'COMPLETED', metadata);
+          simulatePayoutCallback(referenceId, 'COMPLETED', { 
+            ...metadata, 
+            amount 
+          });
         }, 2000);
       }
       
       return simulatedResponse;
     }
+    
+    // If not in development, throw the error
+    console.error(`❌ Payout creation failed:`, error.message);
     throw error;
   }
 }
@@ -201,7 +217,7 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
 // Simulate payout callback in development mode
 async function simulatePayoutCallback(referenceId, status = 'COMPLETED', metadata = {}) {
   try {
-    const callbackUrl = `${process.env.CALLBACK_URL || 'http://localhost:5000'}/api/wallet/webhook/cashout`;
+    const callbackUrl = `${process.env.CALLBACK_URL || 'http://localhost:5001'}/api/wallet/webhook/cashout`;
     const callbackData = {
       id: `sim_payout_${Date.now()}`,
       reference_id: referenceId,
@@ -218,6 +234,8 @@ async function simulatePayoutCallback(referenceId, status = 'COMPLETED', metadat
     const callbackToken = process.env.XENDIT_CALLBACK_TOKEN || 'test_token';
     
     console.log(`📤 Simulating Xendit payout callback for ${referenceId}: ${status}`);
+    console.log(`   URL: ${callbackUrl}`);
+    console.log(`   Data: ${JSON.stringify(callbackData, null, 2)}`);
     
     await axios.post(callbackUrl, callbackData, {
       headers: {
@@ -230,6 +248,7 @@ async function simulatePayoutCallback(referenceId, status = 'COMPLETED', metadat
     console.log(`✅ Simulated callback sent successfully for ${referenceId}`);
   } catch (error) {
     console.error('❌ Failed to send simulated payout callback:', error.message);
+    // Don't throw - let it continue even if callback simulation fails
   }
 }
 
