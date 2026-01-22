@@ -370,6 +370,18 @@ const handleTopUpCallback = async (req, res) => {
 // Initiate cash-out
 const initiateCashOut = async (req, res) => {
   try {
+    // Check if user is a driver
+    if (req.user.role !== 'driver') {
+      console.log(`[CASHOUT] 403 - User is not a driver (role=${req.user.role})`);
+      return res.status(403).json({ error: 'Only drivers can withdraw funds' });
+    }
+
+    // Check if driver is approved (comment this out for development if needed)
+    // if (req.user.approvalStatus !== 'approved') {
+    //   console.log(`[CASHOUT] 403 - Driver not approved (status=${req.user.approvalStatus})`);
+    //   return res.status(403).json({ error: 'Driver account must be approved before cash-out' });
+    // }
+    
     const { amount, bankCode, accountNumber, accountHolderName } = req.body;
     
     // Validate amount

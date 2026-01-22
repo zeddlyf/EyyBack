@@ -3,6 +3,7 @@ const router = express.Router();
 const { body, param } = require('express-validator');
 const walletController = require('../controllers/walletController');
 const auth = require('../middleware/auth');
+const { requireRole } = require('../middleware/auth');
 
 // Validation middleware
 const validateTopUp = [
