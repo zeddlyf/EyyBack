@@ -651,4 +651,44 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
+// DEBUG ENDPOINT: Check user role for cashout troubleshooting
+if (process.env.NODE_ENV !== 'production') {
+  router.get('/debug/user/:email', async (req, res) => {
+    try {
+      const { email } = req.params;
+      const user = await User.findOne({ email: email.toLowerCase() });
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const Wallet = require('../models/Wallet');
+      const wallet = await Wallet.findByUserId(user._id);
+
+      res.json({
+        user: {
+          id: user._id,
+          email: user.email,
+          fullName: `${user.firstName} ${user.lastName}`,
+          role: user.role,
+          approvalStatus: user.approvalStatus,
+          licenseNumber: user.licenseNumber,
+          createdAt: user.createdAt
+        },
+        wallet: {
+          exists: !!wallet,
+          balance: wallet?.balance || 0,
+          transactions: wallet?.transactions?.length || 0
+        },
+        message: user.role === 'driver' 
+          ? '✅ User is a driver and should be able to cashout'
+          : `❌ User is a '${user.role}' but needs to be a 'driver' to cashout`
+      });
+    } catch (error) {
+      console.error('Debug endpoint error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+}
+
 module.exports = router;
