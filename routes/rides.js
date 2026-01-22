@@ -245,62 +245,85 @@ router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
         const crypto = require('crypto');
         
         console.log(`💰 Processing payment for ride ${ride._id}`);
+        console.log(`   Fare: ₱${ride.fare}`);
+        console.log(`   Passenger ID: ${ride.passenger._id}`);
+        console.log(`   Driver ID: ${ride.driver._id}`);
         
         // Get passenger's wallet
         let passengerWallet = await Wallet.findByUserId(ride.passenger._id);
         if (!passengerWallet) {
-          console.warn('Passenger wallet not found');
+          console.warn('❌ Passenger wallet not found - creating new wallet');
+          passengerWallet = new Wallet({
+            user: ride.passenger._id,
+            balance: 0,
+            currency: 'PHP',
+            transactions: []
+          });
+          await passengerWallet.saveWithRepair();
+          console.log('✅ New passenger wallet created');
           ride.paymentStatus = 'pending';
         } else if (passengerWallet.balance < ride.fare) {
-          console.warn(`Insufficient balance`);
+          console.warn(`❌ Insufficient balance. Required: ₱${ride.fare}, Available: ₱${passengerWallet.balance}`);
           ride.paymentStatus = 'pending';
         } else {
-          const referenceId = `ride_${ride._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-          await passengerWallet.deductFunds(ride.fare, {
-            type: 'PAYMENT',
-            referenceId: referenceId,
-            description: `Payment for ride from ${ride.pickupLocation.address} to ${ride.dropoffLocation.address}`,
-            metadata: {
-              rideId: ride._id.toString(),
-              driverId: ride.driver._id.toString(),
-              distance: ride.distance,
-              duration: ride.duration
-            }
-          });
-
-          // Add funds to driver's wallet
-          let driverWallet = await Wallet.findByUserId(ride.driver._id);
-          if (!driverWallet) {
-            driverWallet = new Wallet({
-              user: ride.driver._id,
-              balance: 0,
-              currency: 'PHP',
-              transactions: []
+          try {
+            const referenceId = `ride_${ride._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+            console.log(`   Deducting ₱${ride.fare} from passenger...`);
+            const deductResult = await passengerWallet.deductFunds(ride.fare, {
+              type: 'PAYMENT',
+              referenceId: referenceId,
+              description: `Payment for ride from ${ride.pickupLocation.address} to ${ride.dropoffLocation.address}`,
+              metadata: {
+                rideId: ride._id.toString(),
+                driverId: ride.driver._id.toString(),
+                distance: ride.distance,
+                duration: ride.duration
+              }
             });
-            await driverWallet.saveWithRepair();
-          }
+            console.log(`✅ Passenger deducted. New balance: ₱${deductResult.balance}`);
 
-          const driverReferenceId = `ride_income_${ride._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
-          await driverWallet.addFunds(ride.fare, {
-            type: 'TOPUP',
-            referenceId: driverReferenceId,
-            xenditId: null,
-            paymentMethod: 'RIDE_PAYMENT',
-            description: `Income from ride to ${ride.dropoffLocation.address}`,
-            metadata: {
-              rideId: ride._id.toString(),
-              passengerId: ride.passenger._id.toString(),
-              distance: ride.distance,
-              duration: ride.duration
+            // Add funds to driver's wallet
+            let driverWallet = await Wallet.findByUserId(ride.driver._id);
+            if (!driverWallet) {
+              console.log('📝 Driver wallet not found - creating new wallet');
+              driverWallet = new Wallet({
+                user: ride.driver._id,
+                balance: 0,
+                currency: 'PHP',
+                transactions: []
+              });
+              const saved = await driverWallet.saveWithRepair();
+              console.log(`✅ New driver wallet created with ID: ${saved._id}`);
             }
-          });
 
-          console.log(`✅ Payment processed`);
-          ride.paymentStatus = 'completed';
+            const driverReferenceId = `ride_income_${ride._id}_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+            console.log(`   Adding ₱${ride.fare} to driver wallet...`);
+            const addResult = await driverWallet.addFunds(ride.fare, {
+              type: 'TOPUP',
+              referenceId: driverReferenceId,
+              xenditId: null,
+              paymentMethod: 'RIDE_PAYMENT',
+              description: `Income from ride to ${ride.dropoffLocation.address}`,
+              metadata: {
+                rideId: ride._id.toString(),
+                passengerId: ride.passenger._id.toString(),
+                distance: ride.distance,
+                duration: ride.duration
+              }
+            });
+            console.log(`✅ Driver credited. New balance: ₱${addResult.balance}`);
+            ride.paymentStatus = 'completed';
+          } catch (transactionError) {
+            console.error('❌ Transaction error:', transactionError.message);
+            console.error(transactionError);
+            ride.paymentStatus = 'pending';
+            throw transactionError;
+          }
         }
       } catch (walletError) {
         console.error('❌ Wallet error:', walletError.message);
-        console.warn('Continuing with ride completion');
+        console.error(walletError);
+        console.warn('⚠️  Continuing with ride completion despite wallet error');
       }
     }
 
