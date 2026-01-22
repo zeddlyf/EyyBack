@@ -230,12 +230,20 @@ router.get('/:id([0-9a-fA-F]{24})', auth, async (req, res) => {
       return res.status(404).json({ error: 'Ride not found' });
     }
 
+    console.log(`📍 Completing ride ${ride._id}:`, {
+      currentStatus: ride.status,
+      driverId: ride.driver?._id.toString(),
+      requestUserId: req.user._id.toString(),
+      match: ride.driver?._id.toString() === req.user._id.toString()
+    });
+
     if (!ride.driver || req.user._id.toString() !== ride.driver._id.toString()) {
       return res.status(403).json({ error: 'Only drivers can complete rides' });
     }
 
     if (ride.status !== 'accepted') {
-      return res.status(400).json({ error: 'Can only complete accepted rides' });
+      console.warn(`⚠️  Cannot complete ride with status: ${ride.status}`);
+      return res.status(400).json({ error: `Can only complete accepted rides. Current status: ${ride.status}` });
     }
 
     // Process payment if using wallet
