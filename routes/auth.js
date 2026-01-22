@@ -578,4 +578,77 @@ router.post('/renew', auth, async (req, res) => {
   }
 });
 
+// 🔧 DEVELOPMENT ONLY: Fix user role (for development/testing purposes)
+if (process.env.NODE_ENV !== 'production') {
+  router.post('/dev/fix-user-role', async (req, res) => {
+    try {
+      const { email, role } = req.body;
+      
+      if (!email || !role) {
+        return res.status(400).json({ error: 'Email and role are required' });
+      }
+
+      if (!['driver', 'commuter', 'admin'].includes(role)) {
+        return res.status(400).json({ error: 'Invalid role. Must be driver, commuter, or admin' });
+      }
+
+      const user = await User.findOne({ email: email.toLowerCase() });
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const oldRole = user.role;
+      user.role = role;
+      
+      // If changing to driver, make sure approval status is set
+      if (role === 'driver' && user.approvalStatus !== 'approved') {
+        user.approvalStatus = 'pending';
+      }
+      
+      // If changing from driver to commuter, set approval to approved
+      if (role === 'commuter') {
+        user.approvalStatus = 'approved';
+      }
+
+      await user.save();
+
+      console.log(`✅ Fixed user role: ${email} changed from '${oldRole}' to '${role}'`);
+      res.json({ 
+        message: 'User role updated successfully',
+        user: user.toJSON(),
+        changed: { from: oldRole, to: role }
+      });
+    } catch (error) {
+      console.error('Error fixing user role:', error);
+      res.status(500).json({ error: error.message || 'Server error' });
+    }
+  });
+
+  // 🔍 DEVELOPMENT ONLY: Check user details
+  router.get('/dev/check-user/:email', async (req, res) => {
+    try {
+      const user = await User.findOne({ email: req.params.email.toLowerCase() });
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      res.json({
+        _id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phoneNumber: user.phoneNumber,
+        role: user.role,
+        approvalStatus: user.approvalStatus,
+        licenseNumber: user.licenseNumber,
+        address: user.address,
+        createdAt: user.createdAt
+      });
+    } catch (error) {
+      console.error('Error checking user:', error);
+      res.status(500).json({ error: error.message || 'Server error' });
+    }
+  });
+}
+
 module.exports = router;

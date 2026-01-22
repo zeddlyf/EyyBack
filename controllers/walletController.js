@@ -372,8 +372,13 @@ const initiateCashOut = async (req, res) => {
   try {
     // Check if user is a driver
     if (req.user.role !== 'driver') {
-      console.log(`[CASHOUT] 403 - User is not a driver (role=${req.user.role})`);
-      return res.status(403).json({ error: 'Only drivers can withdraw funds' });
+      console.log(`[CASHOUT] 403 - User is not a driver (role=${req.user.role}, userId=${req.user._id}, email=${req.user.email})`);
+      const errorDetails = {
+        error: 'Only drivers can withdraw funds',
+        userRole: req.user.role,
+        message: `Your account is registered as a '${req.user.role}'. Only driver accounts can request cash-outs. Please contact support if you need to upgrade your account.`
+      };
+      return res.status(403).json(errorDetails);
     }
 
     // Check if driver is approved (comment this out for development if needed)
