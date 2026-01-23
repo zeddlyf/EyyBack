@@ -132,10 +132,13 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
   const referenceId = generateReferenceId('payout_');
   
   // Check if simulation mode is enabled (for development/testing)
-  const isSimulationMode = process.env.CASHOUT_SIMULATION === 'true' || process.env.NODE_ENV === 'development';
+  // Priority: CASHOUT_SIMULATION=true overrides everything
+  const isSimulationMode = process.env.CASHOUT_SIMULATION === 'true';
+  
+  console.log(`[PAYOUT] Environment check: CASHOUT_SIMULATION=${process.env.CASHOUT_SIMULATION}, isSimulationMode=${isSimulationMode}`);
   
   // In simulation mode, return a mock payout object without calling real Xendit API
-  if (isSimulationMode && process.env.CASHOUT_SIMULATION === 'true') {
+  if (isSimulationMode) {
     console.log(`🎭 SIMULATION MODE: Creating mock payout (no real Xendit call)...`, {
       amount,
       bankCode,
