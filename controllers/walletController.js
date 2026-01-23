@@ -542,14 +542,62 @@ const initiateCashOut = async (req, res) => {
 
     console.log(`✅ Cash-out initiated. Amount deducted. New balance: ${updatedWallet.balance}`);
 
+    const responseStatus = payout.metadata?.simulated ? 'completed_simulation' : 'pending';
+    const responseMessage = payout.metadata?.simulated 
+      ? 'Cash-out simulation completed successfully. Amount has been deducted from your earnings.'
+      : 'Cash-out request submitted successfully. It will be processed within 1-3 business days.';
+
     res.json({
       success: true,
       payoutId: payout.id,
       referenceId: payout.reference_id || payout.referenceId,
-      status: 'pending',
+      status: responseStatus,
       amount,
-      message: 'Cash-out request submitted successfully. It will be processed within 1-3 business days.'
+      message: responseMessage,
+      simulated: payout.metadata?.simulated || false
     });
+
+    // In simulation mode, automatically complete the transaction after a short delay
+    if (payout.metadata?.simulated) {
+      console.log(`🎭 SIMULATION: Auto-completing cash-out in 2 seconds...`);
+      setTimeout(async () => {
+        try {
+          // Simulate the callback with COMPLETED status
+          const callbackData = {
+            id: payout.id,
+            reference_id: payout.reference_id || payout.referenceId,
+            status: 'COMPLETED',
+            amount: payout.amount,
+            currency: 'PHP',
+            created: new Date(),
+            metadata: payout.metadata
+          };
+
+          const mockReq = {
+            headers: {
+              'x-callback-token': 'simulation'
+            },
+            body: callbackData
+          };
+
+          let mockRes = {
+            status: (code) => ({
+              json: (data) => {
+                console.log(`🎭 SIMULATION callback response (${code}):`, data);
+              }
+            }),
+            json: (data) => {
+              console.log(`🎭 SIMULATION callback response (200):`, data);
+            }
+          };
+
+          await handleCashOutCallback(mockReq, mockRes);
+          console.log(`✅ SIMULATION: Cash-out auto-completed`);
+        } catch (err) {
+          console.error(`❌ SIMULATION: Error auto-completing cash-out:`, err.message);
+        }
+      }, 2000);
+    }
   } catch (error) {
     console.error('❌ Error initiating cash-out:', error.message);
     res.status(500).json({ error: error.message || 'Failed to initiate cash-out', details: error.message });
@@ -565,7 +613,7 @@ const handleCashOutCallback = async (req, res) => {
     
     // In development mode with simulated webhooks, allow without token or with 'test_token'
     const isDevelopmentSimulation = process.env.NODE_ENV !== 'production' && 
-      (process.env.SIMULATE_WEBHOOKS === 'true' || webhookToken === 'test_token');
+      (process.env.SIMULATE_WEBHOOKS === 'true' || webhookToken === 'test_token' || webhookToken === 'simulation');
     
     if (expectedToken && webhookToken !== expectedToken && !isDevelopmentSimulation) {
       console.error('Invalid webhook token for cash-out callback');

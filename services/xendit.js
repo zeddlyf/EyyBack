@@ -131,6 +131,40 @@ async function createPaymentRequest({ amount, currency = 'PHP', paymentMethod, u
 async function createPayout({ amount, accountHolderName, accountNumber, bankCode, description, metadata = {} }) {
   const referenceId = generateReferenceId('payout_');
   
+  // Check if simulation mode is enabled (for development/testing)
+  const isSimulationMode = process.env.CASHOUT_SIMULATION === 'true' || process.env.NODE_ENV === 'development';
+  
+  // In simulation mode, return a mock payout object without calling real Xendit API
+  if (isSimulationMode && process.env.CASHOUT_SIMULATION === 'true') {
+    console.log(`🎭 SIMULATION MODE: Creating mock payout (no real Xendit call)...`, {
+      amount,
+      bankCode,
+      accountNumber: accountNumber.slice(-4) + '****',
+      referenceId
+    });
+    
+    return {
+      id: `sim_payout_${Date.now()}`,
+      reference_id: referenceId,
+      referenceId,
+      amount,
+      currency: 'PHP',
+      channel_code: bankCode,
+      channel_properties: {
+        account_holder_name: accountHolderName,
+        account_number: accountNumber
+      },
+      status: 'PENDING',
+      description: description || 'Cash out from wallet',
+      created: new Date().toISOString(),
+      metadata: {
+        ...metadata,
+        type: 'WALLET_CASHOUT',
+        simulated: true
+      }
+    };
+  }
+  
   const payload = {
     reference_id: referenceId,
     amount,
