@@ -3,6 +3,7 @@ const User = require('../models/User');
 const xenditService = require('../services/xendit');
 const crypto = require('crypto');
 const { validationResult } = require('express-validator');
+const { getBankChannelCode, validateBankDetails } = require('../utils/bankCodes');
 
 // Get wallet balance
 const getWallet = async (req, res) => {
@@ -398,10 +399,18 @@ const initiateCashOut = async (req, res) => {
       return res.status(400).json({ error: 'Minimum cash-out amount is ₱100.00' });
     }
 
-    // Validate bank details
-    if (!bankCode || !accountNumber || !accountHolderName) {
-      return res.status(400).json({ error: 'Bank details are required (bankCode, accountNumber, accountHolderName)' });
+    // Validate and convert bank details
+    const bankValidation = validateBankDetails({ bankCode, accountNumber, accountHolderName });
+    if (!bankValidation.valid) {
+      console.log(`[CASHOUT] 400 - Invalid bank details: ${bankValidation.error}`);
+      return res.status(400).json({ 
+        error: bankValidation.error,
+        userMessage: 'Please check your bank details and try again'
+      });
     }
+
+    const xenditChannelCode = bankValidation.channelCode;
+    console.log(`[CASHOUT] Bank code conversion: ${bankCode} → ${xenditChannelCode}`);
 
     // Get user's wallet
     let wallet = await Wallet.findByUserId(req.user._id);
@@ -499,14 +508,15 @@ const initiateCashOut = async (req, res) => {
     try {
       payout = await xenditService.createPayout({
         amount,
-        bankCode,
+        bankCode: xenditChannelCode,  // Use converted channel code
         accountNumber,
         accountHolderName,
         description: `Cash out to ${accountHolderName} (${bankCode})`,
         metadata: {
           userId: req.user._id.toString(),
           type: 'WALLET_CASHOUT',
-          bankCode,
+          bankCode,  // Store original bank code for reference
+          xenditChannelCode,  // Store converted code
           accountNumber: accountNumber.slice(-4) // Only store last 4 digits for security
         },
       });
@@ -989,6 +999,39 @@ const debugDriverEarnings = async (req, res) => {
   }
 };
 
+// Get list of supported banks for cashout
+const getSupportedBanks = async (req, res) => {
+  try {
+    const { getSupportedBanks: getBanks } = require('../utils/bankCodes');
+    const supportedBanks = getBanks();
+    
+    // Group banks by category
+    const banksByCategory = {
+      banks: [],
+      eWallets: [],
+      otherPayments: []
+    };
+    
+    supportedBanks.forEach(bank => {
+      if (['GCASH', 'PAYMAYA', 'PAYMAYA_POSTPAID', 'GRABPAY', 'DANA', 'LINKAJA', 'BOOST', 'TOUCH_N_GO', 'PROMPTPAY', 'VIETTELPAY', 'ALIPAY', 'WECHAT', 'KAKAO_PAY', 'OVO'].includes(bank)) {
+        banksByCategory.eWallets.push(bank);
+      } else {
+        banksByCategory.banks.push(bank);
+      }
+    });
+    
+    res.json({
+      success: true,
+      data: banksByCategory,
+      allBanks: supportedBanks,
+      message: 'Supported banks for cash-out'
+    });
+  } catch (error) {
+    console.error('Error getting supported banks:', error);
+    res.status(500).json({ error: 'Failed to get supported banks', message: error.message });
+  }
+};
+
 module.exports = {
   getWallet,
   initializeWallet,
@@ -1001,4 +1044,5 @@ module.exports = {
   testSimulateCashoutCallback,
   testSimulateTopupCallback,
   debugDriverEarnings,
+  getSupportedBanks,
 };

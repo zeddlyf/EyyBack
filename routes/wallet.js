@@ -30,6 +30,9 @@ router.post('/topup', auth, validateTopUp, walletController.initiateTopUp);
 // Handle Xendit top-up webhook (no auth required)
 router.post('/webhook/topup', walletController.handleTopUpCallback);
 
+// Get list of supported banks for cashout
+router.get('/banks/supported', walletController.getSupportedBanks);
+
 // Cash-out from wallet
 router.post('/cashout', auth, validateCashOut, walletController.initiateCashOut);
 

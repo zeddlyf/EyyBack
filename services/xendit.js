@@ -166,89 +166,25 @@ async function createPayout({ amount, accountHolderName, accountNumber, bankCode
       referenceId
     };
   } catch (error) {
-    // In development mode, simulate successful payout response
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn(`⚠️  Xendit API call failed: ${error.message}`);
-      console.log('📋 Development mode: Returning simulated payout response');
+    // Log detailed error information for debugging
+    console.error(`❌ Payout creation failed:`, error.message);
+    
+    if (error.response) {
+      console.error(`   Status: ${error.response.status}`);
+      console.error(`   Data: ${JSON.stringify(error.response.data)}`);
       
-      // Simulate a successful payout response similar to Xendit's actual response
-      const simulatedResponse = {
-        id: `sim_payout_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        reference_id: referenceId,
-        user_id: metadata.userId || 'test_user',
-        amount,
-        merchant_id: 'merchant_' + Math.random().toString(36).substr(2, 5),
-        status: 'PENDING',
-        currency: 'PHP',
-        channel_code: bankCode,
-        channel_properties: {
-          account_holder_name: accountHolderName,
-          account_number: accountNumber,
-          bank_account_code: bankCode
-        },
-        description,
-        metadata,
-        created: new Date(),
-        updated: new Date()
-      };
-      
-      console.log(`✅ Simulated payout created: ${simulatedResponse.id}`);
-      
-      // Schedule automated callback in development (after 2 seconds)
-      if (process.env.SIMULATE_WEBHOOKS === 'true') {
-        console.log(`⏱️  Scheduling simulated callback in 2 seconds...`);
-        setTimeout(() => {
-          simulatePayoutCallback(referenceId, 'COMPLETED', { 
-            ...metadata, 
-            amount 
-          });
-        }, 2000);
+      // Provide detailed error messages for common issues
+      if (error.response.status === 401 || error.response.status === 403) {
+        console.error(`   Issue: Authentication failed - Check XENDIT_API_KEY`);
+        throw new Error(`Xendit API authentication failed. Check your API key is valid and has payout permissions.`);
+      } else if (error.response.status === 400) {
+        console.error(`   Issue: Invalid request - ${JSON.stringify(error.response.data)}`);
+        throw new Error(`Xendit validation error: ${error.response.data.message || error.message}`);
       }
-      
-      return simulatedResponse;
     }
     
-    // If not in development, throw the error
-    console.error(`❌ Payout creation failed:`, error.message);
-    throw error;
-  }
-}
-
-// Simulate payout callback in development mode
-async function simulatePayoutCallback(referenceId, status = 'COMPLETED', metadata = {}) {
-  try {
-    const callbackUrl = `${process.env.CALLBACK_URL || 'http://localhost:5001'}/api/wallet/webhook/cashout`;
-    const callbackData = {
-      id: `sim_payout_${Date.now()}`,
-      reference_id: referenceId,
-      user_id: metadata.userId,
-      amount: metadata.amount,
-      status,
-      currency: 'PHP',
-      created: new Date(),
-      updated: new Date(),
-      metadata
-    };
-
-    // Generate callback token if configured
-    const callbackToken = process.env.XENDIT_CALLBACK_TOKEN || 'test_token';
-    
-    console.log(`📤 Simulating Xendit payout callback for ${referenceId}: ${status}`);
-    console.log(`   URL: ${callbackUrl}`);
-    console.log(`   Data: ${JSON.stringify(callbackData, null, 2)}`);
-    
-    await axios.post(callbackUrl, callbackData, {
-      headers: {
-        'x-callback-token': callbackToken,
-        'Content-Type': 'application/json'
-      },
-      timeout: 5000
-    });
-    
-    console.log(`✅ Simulated callback sent successfully for ${referenceId}`);
-  } catch (error) {
-    console.error('❌ Failed to send simulated payout callback:', error.message);
-    // Don't throw - let it continue even if callback simulation fails
+    // Always throw real errors - no simulation fallback
+    throw new Error(`Xendit payout failed: ${error.message}`);
   }
 }
 
@@ -328,7 +264,6 @@ module.exports = {
   // Payout methods
   createPayout,
   getPayout,
-  simulatePayoutCallback,
   
   // Callback handlers
   handlePaymentCallback,
