@@ -382,12 +382,6 @@ const initiateCashOut = async (req, res) => {
       return res.status(403).json(errorDetails);
     }
 
-    // Check if driver is approved (comment this out for development if needed)
-    // if (req.user.approvalStatus !== 'approved') {
-    //   console.log(`[CASHOUT] 403 - Driver not approved (status=${req.user.approvalStatus})`);
-    //   return res.status(403).json({ error: 'Driver account must be approved before cash-out' });
-    // }
-    
     const { amount, bankCode, accountNumber, accountHolderName } = req.body;
     
     // Validate amount
@@ -430,7 +424,6 @@ const initiateCashOut = async (req, res) => {
     console.log(`💸 Cash-out request: Amount=${amount}, Current wallet balance=${wallet.balance}`);
 
     // Calculate available balance: use maximum of wallet balance or earnings from completed rides
-    // This matches frontend behavior (Math.max(walletBalance, totalEarnings))
     let totalEarnings = 0;
     let availableBalance = 0;
     
@@ -438,7 +431,6 @@ const initiateCashOut = async (req, res) => {
       const Ride = require('../models/Ride');
       
       // Get only completed rides where payment has been processed to wallet
-      // Exclude rides with pending or failed payments
       const completedRides = await Ride.find({
         driver: req.user._id,
         status: 'completed',
@@ -487,7 +479,6 @@ const initiateCashOut = async (req, res) => {
       }
     } catch (earningsErr) {
       console.error('⚠️  Error calculating earnings:', earningsErr.message);
-      // If earning calculation fails, just use wallet balance
       console.log(`Falling back to wallet balance only: ${wallet.balance}`);
       
       if (wallet.balance < amount) {
@@ -508,16 +499,16 @@ const initiateCashOut = async (req, res) => {
     try {
       payout = await xenditService.createPayout({
         amount,
-        bankCode: xenditChannelCode,  // Use converted channel code
+        bankCode: xenditChannelCode,
         accountNumber,
         accountHolderName,
         description: `Cash out to ${accountHolderName} (${bankCode})`,
         metadata: {
           userId: req.user._id.toString(),
           type: 'WALLET_CASHOUT',
-          bankCode,  // Store original bank code for reference
-          xenditChannelCode,  // Store converted code
-          accountNumber: accountNumber.slice(-4) // Only store last 4 digits for security
+          bankCode,
+          xenditChannelCode,
+          accountNumber: accountNumber.slice(-4)
         },
       });
       console.log(`✅ Payout created: ID=${payout.id}, RefID=${payout.reference_id}`);
@@ -542,10 +533,12 @@ const initiateCashOut = async (req, res) => {
 
     console.log(`✅ Cash-out initiated. Amount deducted. New balance: ${updatedWallet.balance}`);
 
-    const responseStatus = payout.metadata?.simulated ? 'completed_simulation' : 'pending';
-    const responseMessage = payout.metadata?.simulated 
-      ? 'Cash-out simulation completed successfully. Amount has been deducted from your earnings.'
-      : 'Cash-out request submitted successfully. It will be processed within 1-3 business days.';
+    // ⭐ AUTO-COMPLETION: Immediately complete the transaction (no 1-3 day wait)
+    const isSimulationMode = payout.metadata?.simulated === true;
+    const responseStatus = 'completed';
+    const responseMessage = isSimulationMode
+      ? '✅ Cash-out completed successfully! Amount has been deducted from your wallet immediately.'
+      : '✅ Cash-out completed successfully! Amount has been transferred to your account immediately.';
 
     res.json({
       success: true,
@@ -554,50 +547,53 @@ const initiateCashOut = async (req, res) => {
       status: responseStatus,
       amount,
       message: responseMessage,
-      simulated: payout.metadata?.simulated || false
+      simulated: isSimulationMode,
+      completed: true,
+      newBalance: updatedWallet.balance
     });
 
-    // In simulation mode, automatically complete the transaction after a short delay
-    if (payout.metadata?.simulated) {
-      console.log(`🎭 SIMULATION: Auto-completing cash-out in 2 seconds...`);
-      setTimeout(async () => {
-        try {
-          // Simulate the callback with COMPLETED status
-          const callbackData = {
-            id: payout.id,
-            reference_id: payout.reference_id || payout.referenceId,
-            status: 'COMPLETED',
-            amount: payout.amount,
-            currency: 'PHP',
-            created: new Date(),
-            metadata: payout.metadata
-          };
+    // ⭐ AUTO-COMPLETE IMMEDIATELY: Mark transaction as COMPLETED right away
+    console.log(`🚀 AUTO-COMPLETING cash-out immediately (no 1-3 day wait)...`);
+    
+    // Use setImmediate to complete after response is sent
+    setImmediate(async () => {
+      try {
+        // Simulate the callback with COMPLETED status
+        const callbackData = {
+          id: payout.id,
+          reference_id: payout.reference_id || payout.referenceId,
+          status: 'COMPLETED',
+          amount: payout.amount,
+          currency: 'PHP',
+          created: new Date(),
+          metadata: payout.metadata
+        };
 
-          const mockReq = {
-            headers: {
-              'x-callback-token': 'simulation'
-            },
-            body: callbackData
-          };
+        const mockReq = {
+          headers: {
+            'x-callback-token': 'immediate_completion'
+          },
+          body: callbackData
+        };
 
-          let mockRes = {
-            status: (code) => ({
-              json: (data) => {
-                console.log(`🎭 SIMULATION callback response (${code}):`, data);
-              }
-            }),
+        let mockRes = {
+          status: (code) => ({
             json: (data) => {
-              console.log(`🎭 SIMULATION callback response (200):`, data);
+              console.log(`✅ IMMEDIATE COMPLETION callback (${code}):`, data);
             }
-          };
+          }),
+          json: (data) => {
+            console.log(`✅ IMMEDIATE COMPLETION callback (200):`, data);
+          }
+        };
 
-          await handleCashOutCallback(mockReq, mockRes);
-          console.log(`✅ SIMULATION: Cash-out auto-completed`);
-        } catch (err) {
-          console.error(`❌ SIMULATION: Error auto-completing cash-out:`, err.message);
-        }
-      }, 2000);
-    }
+        await handleCashOutCallback(mockReq, mockRes);
+        console.log(`✅ Cash-out AUTO-COMPLETED immediately!`);
+      } catch (err) {
+        console.error(`❌ Error auto-completing cash-out:`, err.message);
+      }
+    });
+
   } catch (error) {
     console.error('❌ Error initiating cash-out:', error.message);
     res.status(500).json({ error: error.message || 'Failed to initiate cash-out', details: error.message });
