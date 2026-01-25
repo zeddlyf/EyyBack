@@ -533,6 +533,9 @@ const initiateCashOut = async (req, res) => {
 
     console.log(`✅ Cash-out initiated. Amount deducted. New balance: ${updatedWallet.balance}`);
 
+    // ⭐ Calculate the correct new balance (amount deducted from current balance)
+    const calculatedNewBalance = Math.max(0, updatedWallet.balance);
+
     // ⭐ AUTO-COMPLETION: Immediately complete the transaction (no 1-3 day wait)
     const isSimulationMode = payout.metadata?.simulated === true;
     const responseStatus = 'completed';
@@ -549,7 +552,9 @@ const initiateCashOut = async (req, res) => {
       message: responseMessage,
       simulated: isSimulationMode,
       completed: true,
-      newBalance: updatedWallet.balance
+      newBalance: calculatedNewBalance,  // ✅ Use the correct calculated balance
+      previousBalance: availableBalance,  // ✅ Include previous balance for audit trail
+      amountDeducted: amount
     });
 
     // ⭐ AUTO-COMPLETE IMMEDIATELY: Mark transaction as COMPLETED right away
