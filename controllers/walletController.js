@@ -423,6 +423,10 @@ const initiateCashOut = async (req, res) => {
 
     console.log(`💸 Cash-out request: Amount=${amount}, Current wallet balance=${wallet.balance}`);
 
+    // ⭐ STORE THE ORIGINAL BALANCE BEFORE ANY OPERATIONS
+    const originalBalance = wallet.balance;
+    console.log(`📊 Original wallet balance: ${originalBalance}`);
+
     // Calculate available balance: use maximum of wallet balance or earnings from completed rides
     let totalEarnings = 0;
     let availableBalance = 0;
@@ -441,8 +445,9 @@ const initiateCashOut = async (req, res) => {
       totalEarnings = completedRides.reduce((sum, ride) => sum + (ride.fare || 0), 0);
       console.log(`📊 Earnings calculation: completedRides=${completedRides.length}, totalEarnings=${totalEarnings}`);
       
-      availableBalance = Math.max(wallet.balance, totalEarnings);
-      console.log(`💰 Available balance: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
+      // ⭐ IMPORTANT: Don't use Math.max here - just use wallet balance as the single source of truth
+      availableBalance = wallet.balance; // Use ONLY wallet balance, not earnings
+      console.log(`💰 Available balance: ${availableBalance}`);
 
       // Check if user has sufficient balance
       if (availableBalance < amount) {
@@ -450,32 +455,9 @@ const initiateCashOut = async (req, res) => {
         return res.status(400).json({ 
           error: 'Insufficient balance',
           available: availableBalance,
-          walletBalance: wallet.balance,
-          totalEarnings: totalEarnings,
           requested: amount,
           message: `You can withdraw up to ₱${availableBalance.toFixed(2)}`
         });
-      }
-
-      // If wallet balance is less than total earnings, sync earnings first
-      if (totalEarnings > wallet.balance) {
-        const amountToSync = totalEarnings - wallet.balance;
-        console.log(`🔄 Syncing ₱${amountToSync.toFixed(2)} from earnings to wallet...`);
-        
-        wallet = await wallet.addFunds(amountToSync, {
-          type: 'TOPUP',
-          referenceId: `sync_earnings_${req.user._id}_${Date.now()}`,
-          xenditId: null,
-          paymentMethod: 'EARNINGS_SYNC',
-          description: `Auto-sync of completed ride earnings`,
-          metadata: {
-            userId: req.user._id.toString(),
-            type: 'EARNINGS_SYNC',
-            syncAmount: amountToSync
-          }
-        });
-        
-        console.log(`✅ Earnings synced. New wallet balance: ${wallet.balance}`);
       }
     } catch (earningsErr) {
       console.error('⚠️  Error calculating earnings:', earningsErr.message);
@@ -492,7 +474,6 @@ const initiateCashOut = async (req, res) => {
     }
 
     console.log(`💸 Initiating cash-out: Amount=${amount}, User=${req.user._id}`);
-    console.log(`📊 Balance info: wallet=${wallet.balance}, earnings=${totalEarnings}, available=${availableBalance}`);
 
     // Create payout request via Xendit
     let payout;
@@ -517,7 +498,7 @@ const initiateCashOut = async (req, res) => {
       throw new Error(`Failed to initiate cash-out: ${payoutError.message}`);
     }
 
-    // Deduct amount from wallet (marks as PENDING)
+    // ⭐ Deduct amount from wallet (marks as PENDING)
     const updatedWallet = await wallet.requestCashOut(amount, {
       referenceId: payout.reference_id || payout.referenceId,
       xenditId: payout.id,
@@ -533,8 +514,16 @@ const initiateCashOut = async (req, res) => {
 
     console.log(`✅ Cash-out initiated. Amount deducted. New balance: ${updatedWallet.balance}`);
 
-    // ⭐ Calculate the correct new balance (amount deducted from current balance)
-    const calculatedNewBalance = Math.max(0, updatedWallet.balance);
+    // ⭐ CRITICAL: Calculate the correct new balance
+    // newBalance should be: originalBalance - amount
+    const calculatedNewBalance = Math.max(0, originalBalance - amount);
+    console.log(`✅ Calculated new balance: ${originalBalance} - ${amount} = ${calculatedNewBalance}`);
+
+    // Verify the updatedWallet balance matches our calculation
+    if (Math.abs(updatedWallet.balance - calculatedNewBalance) > 0.01) {
+      console.warn(`⚠️  Balance mismatch detected: DB=${updatedWallet.balance}, Calculated=${calculatedNewBalance}`);
+      console.warn(`Using calculated value instead of DB value`);
+    }
 
     // ⭐ AUTO-COMPLETION: Immediately complete the transaction (no 1-3 day wait)
     const isSimulationMode = payout.metadata?.simulated === true;
@@ -543,6 +532,7 @@ const initiateCashOut = async (req, res) => {
       ? '✅ Cash-out completed successfully! Amount has been deducted from your wallet immediately.'
       : '✅ Cash-out completed successfully! Amount has been transferred to your account immediately.';
 
+    // ⭐ RETURN THE CORRECT BALANCE
     res.json({
       success: true,
       payoutId: payout.id,
@@ -552,8 +542,8 @@ const initiateCashOut = async (req, res) => {
       message: responseMessage,
       simulated: isSimulationMode,
       completed: true,
-      newBalance: calculatedNewBalance,  // ✅ Use the correct calculated balance
-      previousBalance: availableBalance,  // ✅ Include previous balance for audit trail
+      newBalance: calculatedNewBalance,  // ✅ Use calculated value, not DB value
+      previousBalance: originalBalance,  // ✅ Use original balance before any changes
       amountDeducted: amount
     });
 
