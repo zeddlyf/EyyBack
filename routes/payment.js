@@ -124,7 +124,7 @@ router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) 
     const wallets = await Wallet.find({})
       .populate('user', 'firstName lastName email role');
     
-    // Extract and format wallet transactions (top-ups only)
+    // Extract and format wallet transactions (top-ups and cash-outs)
     const walletTransactions = [];
     const start = startDate ? new Date(startDate) : null;
     const end = endDate ? new Date(endDate) : null;
@@ -133,11 +133,12 @@ router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) 
       if (!wallet.transactions || !Array.isArray(wallet.transactions)) return;
       
       wallet.transactions.forEach(tx => {
-        if (tx.type === 'TOPUP' && tx.status === 'COMPLETED') {
-          const txDate = new Date(tx.createdAt || tx.timestamp || tx.date);
-          
-          // Filter by date range if provided
-          if ((!start || txDate >= start) && (!end || txDate <= end)) {
+        const txDate = new Date(tx.createdAt || tx.timestamp || tx.date);
+        
+        // Filter by date range if provided
+        if ((!start || txDate >= start) && (!end || txDate <= end)) {
+          // Include TOPUP transactions (completed only)
+          if (tx.type === 'TOPUP' && tx.status === 'COMPLETED') {
             walletTransactions.push({
               _id: tx._id || tx.id,
               type: 'TOPUP',
@@ -150,6 +151,23 @@ router.get('/admin/earnings', auth, auth.requireRole('admin'), async (req, res) 
               paymentMethod: tx.paymentMethod || 'E-Wallet',
               referenceId: tx.referenceId,
               xenditId: tx.xenditId
+            });
+          }
+          // Include CASHOUT transactions (all statuses: PENDING, COMPLETED, FAILED)
+          else if (tx.type === 'CASHOUT') {
+            walletTransactions.push({
+              _id: tx._id || tx.id,
+              type: 'CASHOUT',
+              amount: tx.amount || 0,
+              status: tx.status || 'PENDING',
+              date: txDate,
+              createdAt: tx.createdAt || tx.timestamp || txDate,
+              user: wallet.user,
+              description: tx.description || 'Cash Out',
+              paymentMethod: tx.method || 'Bank Transfer',
+              referenceId: tx.referenceId,
+              xenditId: tx.xenditId,
+              metadata: tx.metadata || {}
             });
           }
         }
